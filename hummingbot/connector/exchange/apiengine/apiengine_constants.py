@@ -7,28 +7,30 @@ HBOT_ORDER_ID_PREFIX = "x-MG43PCSN"
 MAX_ORDER_ID_LEN = 32
 
 # Base URL
-REST_URL = "https://apiengine.demoapps.space/"
+REST_URL = "https://apiengine.demoapps.space"
 WSS_URL = "wss://apiengine.demoapps.space/ws"
 
-PUBLIC_API_VERSION = ""
-PRIVATE_API_VERSION = ""
+PUBLIC_API_VERSION = "/"
+PRIVATE_API_VERSION = "/"
 
 # Public API endpoints
-TICKER_PRICE_CHANGE_PATH_URL = "ticker/price"
+TICKER_PRICE_CHANGE_PATH_URL = "ticker/24hr"
 TICKER_BOOK_PATH_URL = "ticker/bookTicker"
 PRICES_PATH_URL = "ticker/price"
-EXCHANGE_INFO_PATH_URL = "exchangeInfo"
+EXCHANGE_INFO_PATH_URL = "exchangeinfo"
 PING_PATH_URL = "ping"
 SNAPSHOT_PATH_URL = "depth"
 SERVER_TIME_PATH_URL = "time"
 
 # Private API endpoints
-ACCOUNTS_PATH_URL = "account"
+ACCOUNTS_PATH_URL = "balance"
 MY_TRADES_PATH_URL = "myTrades"
 ORDER_PATH_URL = "order"
 ALL_ORDERS_PATH_URL = "order/all-orders"
 ACTIVE_ORDERS_PATH_URL = "order/active-orders"
 USER_STREAM_PATH_URL = "userDataStream"
+API_KEY_PATH_URL = "apikey"
+API_KEY_GENERATE_PATH_URL = "apikey/generate"
 
 # Rate limit endpoints
 RATE_LIMITS_PATH_URL = "ratelimits"

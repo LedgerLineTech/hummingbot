@@ -1,4 +1,6 @@
+import hmac
 from typing import Any, Dict
+from urllib.parse import urlencode
 
 from hummingbot.connector.time_synchronizer import TimeSynchronizer
 from hummingbot.core.web_assistant.auth import AuthBase
@@ -13,13 +15,13 @@ class ApiEngineAuth(AuthBase):
 
     async def rest_authenticate(self, request: RESTRequest) -> RESTRequest:
         """
-        Adds the Bearer token to the request header for authenticated interactions.
+        Adds authentication headers to the request for authenticated interactions.
         :param request: the request to be configured for authenticated interaction
         """
         headers = {}
         if request.headers is not None:
             headers.update(request.headers)
-        headers.update(self.header_for_authentication())
+        headers.update(self.header_for_authentication(request))
         request.headers = headers
 
         return request
@@ -31,9 +33,36 @@ class ApiEngineAuth(AuthBase):
         """
         return request  # pass-through
 
-    def header_for_authentication(self) -> Dict[str, str]:
-        return {
+    def header_for_authentication(self, request: RESTRequest = None) -> Dict[str, str]:
+        """
+        Generates authentication headers using API key and secret.
+        If the API uses HMAC signature, it will be generated here.
+        Otherwise, it uses simple API key/secret header authentication.
+        """
+        headers = {
             "x-api-key": self.api_key,
-            "x-api-secret": self.secret_key,
-            "Authorization": f"Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkNGUzNDhhMi1mMDU3LTQ3MjgtYWZlYi05ODBjZTY4ZTgzMmQiLCJlbWFpbCI6InJpc2hpQHRlc3RtYWlsLmNvbSIsInJvbGVzIjpbIlVTRVIiLCJBRE1JTiJdLCJpYXQiOjE3NTkyOTYwNDEsImV4cCI6MTc1OTMzMjA0MX0.fukEW3KvHiZmk8q7hmTCS60vYwuuNDJ5tpB2V6N9LaU"
         }
+
+        # Generate signature if request is provided
+        if request is not None:
+            timestamp = str(int(self.time_provider.time() * 1000))
+            headers["x-timestamp"] = timestamp
+
+            # Create signature string based on request method
+            if request.method == RESTMethod.POST and request.data:
+                signature_payload = f"{timestamp}{request.data}"
+            elif request.params:
+                signature_payload = f"{timestamp}{urlencode(request.params)}"
+            else:
+                signature_payload = timestamp
+
+            # Generate HMAC signature
+            signature = hmac.new(
+                self.secret_key.encode("utf-8"),
+                signature_payload.encode("utf-8"),
+                digestmod="sha256"
+            ).hexdigest()
+
+            headers["x-signature"] = signature
+
+        return headers

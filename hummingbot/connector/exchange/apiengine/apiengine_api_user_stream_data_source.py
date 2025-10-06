@@ -62,10 +62,10 @@ class ApiEngineAPIUserStreamDataSource(UserStreamTrackerDataSource):
         while True:
             try:
                 data = await rest_assistant.execute_request(
-                    url=web_utils.public_rest_url(path_url=CONSTANTS.USER_STREAM_PATH_URL, domain=self._domain),
+                    url=web_utils.private_rest_url(path_url=CONSTANTS.USER_STREAM_PATH_URL, domain=self._domain),
                     method=RESTMethod.POST,
                     throttler_limit_id=CONSTANTS.USER_STREAM_PATH_URL,
-                    headers=self._auth.header_for_authentication(),
+                    is_auth_required=True,
                     timeout=timeout,
                 )
                 return data["listenKey"]
@@ -89,12 +89,12 @@ class ApiEngineAPIUserStreamDataSource(UserStreamTrackerDataSource):
         rest_assistant = await self._api_factory.get_rest_assistant()
         try:
             data = await rest_assistant.execute_request(
-                url=web_utils.public_rest_url(path_url=CONSTANTS.USER_STREAM_PATH_URL, domain=self._domain),
+                url=web_utils.private_rest_url(path_url=CONSTANTS.USER_STREAM_PATH_URL, domain=self._domain),
                 params={"listenKey": self._current_listen_key},
                 method=RESTMethod.PUT,
                 return_err=True,
                 throttler_limit_id=CONSTANTS.USER_STREAM_PATH_URL,
-                headers=self._auth.header_for_authentication()
+                is_auth_required=True
             )
 
             if "code" in data:

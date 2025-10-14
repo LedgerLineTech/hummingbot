@@ -1,5 +1,5 @@
 from decimal import Decimal
-from typing import TYPE_CHECKING, Dict
+from typing import TYPE_CHECKING, Dict, Optional
 
 from pydantic import SecretStr
 
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 class CoinbaseAdvancedTradeRateSource(RateSourceBase):
     def __init__(self, use_auth_for_public_endpoints: bool = False):
         super().__init__()
-        self._coinbase_exchange: CoinbaseAdvancedTradeExchange | None = None  # delayed because of circular reference
+        self._coinbase_exchange: Optional['CoinbaseAdvancedTradeExchange'] = None  # delayed because of circular reference
         self._use_auth_for_public_endpoints = use_auth_for_public_endpoints
 
     @property
@@ -25,7 +25,7 @@ class CoinbaseAdvancedTradeRateSource(RateSourceBase):
         return "coinbase_advanced_trade"
 
     @async_ttl_cache(ttl=30, maxsize=1)
-    async def get_prices(self, quote_token: str | None = None) -> Dict[str, Decimal]:
+    async def get_prices(self, quote_token: Optional[str] = None) -> Dict[str, Decimal]:
         if quote_token is None:
             quote_token = "USD"
 

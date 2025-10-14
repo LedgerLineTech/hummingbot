@@ -1,6 +1,6 @@
 from typing import Callable, Optional
 
-import hummingbot.connector.exchange.apiengine.apiengine_constants as CONSTANTS
+import hummingbot.connector.exchange.rkex.rkex_constants as CONSTANTS
 from hummingbot.connector.time_synchronizer import TimeSynchronizer
 from hummingbot.connector.utils import TimeSynchronizerRESTPreProcessor
 from hummingbot.core.api_throttler.async_throttler import AsyncThrottler
@@ -13,7 +13,7 @@ def public_rest_url(path_url: str, domain: str = CONSTANTS.DEFAULT_DOMAIN) -> st
     """
     Creates a full URL for provided public REST endpoint
     :param path_url: a public REST endpoint
-    :param domain: the ApiEngine domain to connect to. The default value is ""
+    :param domain: the Rkex domain to connect to. The default value is ""
     :return: the full URL to the endpoint
     """
     return CONSTANTS.REST_URL + CONSTANTS.PUBLIC_API_VERSION + path_url
@@ -23,7 +23,7 @@ def private_rest_url(path_url: str, domain: str = CONSTANTS.DEFAULT_DOMAIN) -> s
     """
     Creates a full URL for provided private REST endpoint
     :param path_url: a private REST endpoint
-    :param domain: the ApiEngine domain to connect to. The default value is ""
+    :param domain: the Rkex domain to connect to. The default value is ""
     :return: the full URL to the endpoint
     """
     return CONSTANTS.REST_URL + CONSTANTS.PRIVATE_API_VERSION + path_url

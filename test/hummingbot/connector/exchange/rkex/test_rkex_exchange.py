@@ -11,9 +11,9 @@ from bidict import bidict
 
 from hummingbot.client.config.client_config_map import ClientConfigMap
 from hummingbot.client.config.config_helpers import ClientConfigAdapter
-from hummingbot.connector.exchange.apiengine import apiengine_constants as CONSTANTS, apiengine_web_utils as web_utils
-from hummingbot.connector.exchange.apiengine.apiengine_api_order_book_data_source import ApiEngineAPIOrderBookDataSource
-from hummingbot.connector.exchange.apiengine.apiengine_exchange import ApiEngineExchange
+from hummingbot.connector.exchange.rkex import rkex_constants as CONSTANTS, rkex_web_utils as web_utils
+from hummingbot.connector.exchange.rkex.rkex_api_order_book_data_source import RkexAPIOrderBookDataSource
+from hummingbot.connector.exchange.rkex.rkex_exchange import RkexExchange
 from hummingbot.connector.trading_rule import TradingRule
 from hummingbot.core.data_type.common import OrderType, TradeType
 from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState
@@ -22,7 +22,7 @@ from hummingbot.core.event.events import MarketEvent
 from hummingbot.core.network_iterator import NetworkStatus
 
 
-class TestApiEngineExchange(unittest.TestCase):
+class TestRkexExchange(unittest.TestCase):
     level = 0
 
     @classmethod
@@ -43,9 +43,9 @@ class TestApiEngineExchange(unittest.TestCase):
         self.test_task: Optional[asyncio.Task] = None
         self.client_config_map = ClientConfigAdapter(ClientConfigMap())
 
-        self.exchange = ApiEngineExchange(
-            apiengine_api_key=self.api_key,
-            apiengine_api_secret=self.api_secret_key,
+        self.exchange = RkexExchange(
+            rkex_api_key=self.api_key,
+            rkex_api_secret=self.api_secret_key,
             trading_pairs=[self.trading_pair]
         )
 
@@ -59,14 +59,14 @@ class TestApiEngineExchange(unittest.TestCase):
 
         self._initialize_event_loggers()
 
-        ApiEngineAPIOrderBookDataSource._trading_pair_symbol_map = {
+        RkexAPIOrderBookDataSource._trading_pair_symbol_map = {
             CONSTANTS.DEFAULT_DOMAIN: bidict(
                 {self.ex_trading_pair: self.trading_pair})
         }
 
     def tearDown(self) -> None:
         self.test_task and self.test_task.cancel()
-        ApiEngineAPIOrderBookDataSource._trading_pair_symbol_map = {}
+        RkexAPIOrderBookDataSource._trading_pair_symbol_map = {}
         super().tearDown()
 
     def _initialize_event_loggers(self):
@@ -161,7 +161,7 @@ class TestApiEngineExchange(unittest.TestCase):
         self.assertIn(OrderType.LIMIT_MAKER, supported_types)
 
     def test_name(self):
-        self.assertEqual("apiengine", self.exchange.name)
+        self.assertEqual("rkex", self.exchange.name)
 
     def test_client_order_id_max_length(self):
         self.assertEqual(CONSTANTS.MAX_ORDER_ID_LEN, self.exchange.client_order_id_max_length)
@@ -215,7 +215,7 @@ class TestApiEngineExchange(unittest.TestCase):
         self.assertEqual(Decimal("0.000001"), trading_rule.min_price_increment)
 
     def test_initial_status_dict(self):
-        ApiEngineAPIOrderBookDataSource._trading_pair_symbol_map = {}
+        RkexAPIOrderBookDataSource._trading_pair_symbol_map = {}
 
         status_dict = self.exchange.status_dict
 

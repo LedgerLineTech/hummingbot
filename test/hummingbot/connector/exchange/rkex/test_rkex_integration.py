@@ -1,5 +1,5 @@
 """
-Integration tests for ApiEngine connector using the live API at https://apiengine.demoapps.space
+Integration tests for Rkex connector using the live API at https://apiengine.demoapps.space
 
 These tests connect to the actual API server to verify connectivity and endpoint structure.
 They require a valid Bearer token for API key generation.
@@ -13,12 +13,12 @@ from typing import Awaitable
 
 import aiohttp
 
-from hummingbot.connector.exchange.apiengine import apiengine_constants as CONSTANTS
-from hummingbot.connector.exchange.apiengine import apiengine_web_utils as web_utils
-from hummingbot.connector.exchange.apiengine.apiengine_exchange import ApiEngineExchange
+from hummingbot.connector.exchange.rkex import rkex_constants as CONSTANTS
+from hummingbot.connector.exchange.rkex import rkex_web_utils as web_utils
+from hummingbot.connector.exchange.rkex.rkex_exchange import RkexExchange
 
 
-class TestApiEngineIntegration(unittest.TestCase):
+class TestRkexIntegration(unittest.TestCase):
     """Integration tests that connect to the live API"""
 
     # Bearer token for API key generation
@@ -156,7 +156,7 @@ class TestApiEngineIntegration(unittest.TestCase):
             self.skipTest(f"API key generation test skipped: {str(e)}")
 
 
-class TestApiEngineConnectorInitialization(unittest.TestCase):
+class TestRkexConnectorInitialization(unittest.TestCase):
     """Test connector can be initialized with proper configuration"""
 
     def test_connector_initialization(self):
@@ -165,21 +165,21 @@ class TestApiEngineConnectorInitialization(unittest.TestCase):
         api_secret = "test_secret"
         trading_pairs = ["BTC-USDT", "ETH-USDT"]
 
-        connector = ApiEngineExchange(
-            apiengine_api_key=api_key,
-            apiengine_api_secret=api_secret,
+        connector = RkexExchange(
+            rkex_api_key=api_key,
+            rkex_api_secret=api_secret,
             trading_pairs=trading_pairs
         )
 
-        self.assertEqual("apiengine", connector.name)
+        self.assertEqual("rkex", connector.name)
         self.assertEqual(trading_pairs, connector.trading_pairs)
         self.assertIsNotNone(connector.authenticator)
 
     def test_connector_properties(self):
         """Test connector basic properties"""
-        connector = ApiEngineExchange(
-            apiengine_api_key="test",
-            apiengine_api_secret="test",
+        connector = RkexExchange(
+            rkex_api_key="test",
+            rkex_api_secret="test",
             trading_pairs=["BTC-USDT"]
         )
 

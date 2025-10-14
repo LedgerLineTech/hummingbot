@@ -26,30 +26,30 @@ def is_exchange_information_valid(exchange_info: Dict[str, Any]) -> bool:
     return exchange_info.get("status", "TRADING") == "TRADING"
 
 
-class ApiEngineConfigMap(BaseConnectorConfigMap):
-    connector: str = "apiengine"
-    apiengine_api_key: SecretStr = Field(
+class RkexConfigMap(BaseConnectorConfigMap):
+    connector: str = "rkex"
+    rkex_api_key: SecretStr = Field(
         default=...,
         json_schema_extra={
-            "prompt": lambda cm: "Enter your ApiEngine API key",
+            "prompt": lambda cm: "Enter your Rkex API key",
             "is_secure": True,
             "is_connect_key": True,
             "prompt_on_new": True,
         }
     )
-    apiengine_api_secret: SecretStr = Field(
+    rkex_api_secret: SecretStr = Field(
         default=...,
         json_schema_extra={
-            "prompt": lambda cm: "Enter your ApiEngine API secret",
+            "prompt": lambda cm: "Enter your Rkex API secret",
             "is_secure": True,
             "is_connect_key": True,
             "prompt_on_new": True,
         }
     )
-    model_config = ConfigDict(title="apiengine")
+    model_config = ConfigDict(title="rkex")
 
 
-KEYS = ApiEngineConfigMap.model_construct()
+KEYS = RkexConfigMap.model_construct()
 
 OTHER_DOMAINS = []
 OTHER_DOMAINS_PARAMETER = {}

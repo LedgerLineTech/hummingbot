@@ -1,10 +1,10 @@
-# ApiEngine Connector Tests
+# Rkex Connector Tests
 
-This directory contains comprehensive tests for the ApiEngine exchange connector for Hummingbot.
+This directory contains comprehensive tests for the Rkex exchange connector for Hummingbot.
 
 ## Test Files
 
-### 1. `test_apiengine_auth.py`
+### 1. `test_rkex_auth.py`
 Tests authentication mechanism with HMAC-SHA256 signatures.
 
 **Test Coverage:**
@@ -15,9 +15,9 @@ Tests authentication mechanism with HMAC-SHA256 signatures.
 - WebSocket authentication (passthrough)
 - Timestamp formatting (milliseconds)
 
-**Run:** `pytest test_apiengine_auth.py -v`
+**Run:** `pytest test_rkex_auth.py -v`
 
-### 2. `test_apiengine_utils.py`
+### 2. `test_rkex_utils.py`
 Tests utility functions for exchange information validation.
 
 **Test Coverage:**
@@ -25,9 +25,9 @@ Tests utility functions for exchange information validation.
 - Symbol filtering
 - Default status handling
 
-**Run:** `pytest test_apiengine_utils.py -v`
+**Run:** `pytest test_rkex_utils.py -v`
 
-### 3. `test_apiengine_web_utils.py`
+### 3. `test_rkex_web_utils.py`
 Tests URL construction for public and private endpoints.
 
 **Test Coverage:**
@@ -35,9 +35,9 @@ Tests URL construction for public and private endpoints.
 - Private REST URL construction
 - All endpoint URL validation against live API
 
-**Run:** `pytest test_apiengine_web_utils.py -v`
+**Run:** `pytest test_rkex_web_utils.py -v`
 
-### 4. `test_apiengine_exchange.py`
+### 4. `test_rkex_exchange.py`
 Comprehensive exchange functionality tests.
 
 **Test Coverage:**
@@ -49,9 +49,9 @@ Comprehensive exchange functionality tests.
 - Trading pair symbol mapping
 - Exchange status monitoring
 
-**Run:** `pytest test_apiengine_exchange.py -v`
+**Run:** `pytest test_rkex_exchange.py -v`
 
-### 5. `test_apiengine_integration.py` ⭐ **Live API Tests**
+### 5. `test_rkex_integration.py` ⭐ **Live API Tests**
 Integration tests against the live API at `https://apiengine.demoapps.space`.
 
 **Test Coverage:**
@@ -61,22 +61,22 @@ Integration tests against the live API at `https://apiengine.demoapps.space`.
 - API key generation (with Bearer token)
 - Connector initialization
 
-**Run:** `pytest test_apiengine_integration.py -v`
+**Run:** `pytest test_rkex_integration.py -v`
 
 ## Running All Tests
 
 ```bash
 # Run all tests
-pytest test/hummingbot/connector/exchange/apiengine/ -v
+pytest test/hummingbot/connector/exchange/rkex/ -v
 
 # Run with coverage
-pytest test/hummingbot/connector/exchange/apiengine/ --cov=hummingbot.connector.exchange.apiengine --cov-report=html
+pytest test/hummingbot/connector/exchange/rkex/ --cov=hummingbot.connector.exchange.rkex --cov-report=html
 
 # Run specific test file
-pytest test/hummingbot/connector/exchange/apiengine/test_apiengine_auth.py -v
+pytest test/hummingbot/connector/exchange/rkex/test_rkex_auth.py -v
 
 # Run specific test
-pytest test/hummingbot/connector/exchange/apiengine/test_apiengine_auth.py::ApiEngineAuthTests::test_rest_auth_signature_get_request -v
+pytest test/hummingbot/connector/exchange/rkex/test_rkex_auth.py::RkexAuthTests::test_rest_auth_signature_get_request -v
 ```
 
 ## API Endpoints
@@ -149,15 +149,15 @@ pip install pytest pytest-asyncio aioresponses aiohttp
 
 ### Environment Variables (Optional)
 ```bash
-export APIENGINE_API_KEY="your_api_key"
-export APIENGINE_API_SECRET="your_api_secret"
-export APIENGINE_BEARER_TOKEN="your_bearer_token"
+export RKEX_API_KEY="your_api_key"
+export RKEX_API_SECRET="your_api_secret"
+export RKEX_BEARER_TOKEN="your_bearer_token"
 ```
 
 ## Notes
 
 - Integration tests connect to the live API and may be skipped if the API is unreachable
-- Bearer token for API key generation may expire - update in `test_apiengine_integration.py` if needed
+- Bearer token for API key generation may expire - update in `test_rkex_integration.py` if needed
 - All syntax checks pass with no errors
 - Tests follow Hummingbot connector testing patterns (based on Bybit, Binance connectors)
 

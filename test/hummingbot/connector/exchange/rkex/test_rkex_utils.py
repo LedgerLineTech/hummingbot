@@ -1,9 +1,9 @@
 from unittest import TestCase
 
-from hummingbot.connector.exchange.apiengine import apiengine_utils as utils
+from hummingbot.connector.exchange.rkex import rkex_utils as utils
 
 
-class ApiEngineUtilsTests(TestCase):
+class RkexUtilsTests(TestCase):
 
     def test_is_exchange_information_valid_for_active_symbol(self):
         """Test that TRADING status is valid"""

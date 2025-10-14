@@ -5,14 +5,14 @@ from typing import Any, Dict, List, Optional, Tuple
 from bidict import bidict
 
 from hummingbot.connector.constants import s_decimal_NaN
-from hummingbot.connector.exchange.apiengine import (
-    apiengine_constants as CONSTANTS,
-    apiengine_utils,
-    apiengine_web_utils as web_utils,
+from hummingbot.connector.exchange.rkex import (
+    rkex_constants as CONSTANTS,
+    rkex_utils,
+    rkex_web_utils as web_utils,
 )
-from hummingbot.connector.exchange.apiengine.apiengine_api_order_book_data_source import ApiEngineAPIOrderBookDataSource
-from hummingbot.connector.exchange.apiengine.apiengine_api_user_stream_data_source import ApiEngineAPIUserStreamDataSource
-from hummingbot.connector.exchange.apiengine.apiengine_auth import ApiEngineAuth
+from hummingbot.connector.exchange.rkex.rkex_api_order_book_data_source import RkexAPIOrderBookDataSource
+from hummingbot.connector.exchange.rkex.rkex_api_user_stream_data_source import RkexAPIUserStreamDataSource
+from hummingbot.connector.exchange.rkex.rkex_auth import RkexAuth
 from hummingbot.connector.exchange_py_base import ExchangePyBase
 from hummingbot.connector.trading_rule import TradingRule
 from hummingbot.connector.utils import TradeFillOrderDetails, combine_to_hb_trading_pair
@@ -27,46 +27,46 @@ from hummingbot.core.web_assistant.connections.data_types import RESTMethod
 from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
 
 
-class ApiEngineExchange(ExchangePyBase):
+class RkexExchange(ExchangePyBase):
     UPDATE_ORDER_STATUS_MIN_INTERVAL = 10.0
 
     web_utils = web_utils
 
     def __init__(self,
-                 apiengine_api_key: str,
-                 apiengine_api_secret: str,
+                 rkex_api_key: str,
+                 rkex_api_secret: str,
                  balance_asset_limit: Optional[Dict[str, Dict[str, Decimal]]] = None,
                  rate_limits_share_pct: Decimal = Decimal("100"),
                  trading_pairs: Optional[List[str]] = None,
                  trading_required: bool = True,
                  domain: str = CONSTANTS.DEFAULT_DOMAIN,
                  ):
-        self.api_key = apiengine_api_key
-        self.secret_key = apiengine_api_secret
+        self.api_key = rkex_api_key
+        self.secret_key = rkex_api_secret
         self._domain = domain
         self._trading_required = trading_required
         self._trading_pairs = trading_pairs
-        self._last_trades_poll_apiengine_timestamp = 1.0
+        self._last_trades_poll_rkex_timestamp = 1.0
         super().__init__(balance_asset_limit, rate_limits_share_pct)
 
     @staticmethod
-    def apiengine_order_type(order_type: OrderType) -> str:
+    def rkex_order_type(order_type: OrderType) -> str:
         return order_type.name.upper()
 
     @staticmethod
-    def to_hb_order_type(apiengine_type: str) -> OrderType:
-        return OrderType[apiengine_type]
+    def to_hb_order_type(rkex_type: str) -> OrderType:
+        return OrderType[rkex_type]
 
     @property
     def authenticator(self):
-        return ApiEngineAuth(
+        return RkexAuth(
             api_key=self.api_key,
             secret_key=self.secret_key,
             time_provider=self._time_synchronizer)
 
     @property
     def name(self) -> str:
-        return "apiengine"
+        return "rkex"
 
     @property
     def rate_limits_rules(self):
@@ -139,14 +139,14 @@ class ApiEngineExchange(ExchangePyBase):
             auth=self._auth)
 
     def _create_order_book_data_source(self) -> OrderBookTrackerDataSource:
-        return ApiEngineAPIOrderBookDataSource(
+        return RkexAPIOrderBookDataSource(
             trading_pairs=self._trading_pairs,
             connector=self,
             domain=self.domain,
             api_factory=self._web_assistants_factory)
 
     def _create_user_stream_data_source(self) -> UserStreamTrackerDataSource:
-        return ApiEngineAPIUserStreamDataSource(
+        return RkexAPIUserStreamDataSource(
             auth=self._auth,
             trading_pairs=self._trading_pairs,
             connector=self,
@@ -175,7 +175,7 @@ class ApiEngineExchange(ExchangePyBase):
                            **kwargs) -> Tuple[str, float]:
         order_result = None
         amount_str = f"{amount:f}"
-        type_str = ApiEngineExchange.apiengine_order_type(order_type)
+        type_str = RkexExchange.rkex_order_type(order_type)
         side_str = CONSTANTS.SIDE_BUY if trade_type is TradeType.BUY else CONSTANTS.SIDE_SELL
         symbol = await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
         api_params = {"symbol": symbol,
@@ -249,7 +249,7 @@ class ApiEngineExchange(ExchangePyBase):
         """
         trading_pair_rules = exchange_info_dict.get("symbols", [])
         retval = []
-        for rule in filter(apiengine_utils.is_exchange_information_valid, trading_pair_rules):
+        for rule in filter(rkex_utils.is_exchange_information_valid, trading_pair_rules):
             try:
                 trading_pair = await self.trading_pair_associated_to_exchange_symbol(symbol=rule.get("symbol"))
                 filters = rule.get("filters")
@@ -352,10 +352,10 @@ class ApiEngineExchange(ExchangePyBase):
     async def _update_order_fills_from_trades(self):
         """
         This is intended to be a backup measure to get filled events with trade ID for orders,
-        in case ApiEngine's user stream events are not working.
+        in case Rkex's user stream events are not working.
         NOTE: It is not required to copy this functionality in other connectors.
         This is separated from _update_order_status which only updates the order status without producing filled
-        events, since ApiEngine's get order endpoint does not return trade IDs.
+        events, since Rkex's get order endpoint does not return trade IDs.
         The minimum poll interval for order status is 10 seconds.
         """
         small_interval_last_tick = self._last_poll_timestamp / self.UPDATE_ORDER_STATUS_MIN_INTERVAL
@@ -365,8 +365,8 @@ class ApiEngineExchange(ExchangePyBase):
 
         if (long_interval_current_tick > long_interval_last_tick
                 or (self.in_flight_orders and small_interval_current_tick > small_interval_last_tick)):
-            query_time = int(self._last_trades_poll_apiengine_timestamp * 1e3)
-            self._last_trades_poll_apiengine_timestamp = self._time_synchronizer.time()
+            query_time = int(self._last_trades_poll_rkex_timestamp * 1e3)
+            self._last_trades_poll_rkex_timestamp = self._time_synchronizer.time()
             order_by_exchange_id_map = {}
             for order in self._order_tracker.all_fillable_orders.values():
                 order_by_exchange_id_map[order.exchange_order_id] = order
@@ -529,7 +529,7 @@ class ApiEngineExchange(ExchangePyBase):
 
     def _initialize_trading_pair_symbols_from_exchange_info(self, exchange_info: Dict[str, Any]):
         mapping = bidict()
-        for symbol_data in filter(apiengine_utils.is_exchange_information_valid, exchange_info["symbols"]):
+        for symbol_data in filter(rkex_utils.is_exchange_information_valid, exchange_info["symbols"]):
             mapping[symbol_data["symbol"]] = combine_to_hb_trading_pair(base=symbol_data["baseAsset"],
                                                                         quote=symbol_data["quoteAsset"])
         self._set_trading_pair_symbol_map(mapping)

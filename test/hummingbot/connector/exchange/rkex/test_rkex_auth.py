@@ -3,11 +3,11 @@ from typing import Awaitable
 from unittest import TestCase
 from unittest.mock import MagicMock
 
-from hummingbot.connector.exchange.apiengine.apiengine_auth import ApiEngineAuth
+from hummingbot.connector.exchange.rkex.rkex_auth import RkexAuth
 from hummingbot.core.web_assistant.connections.data_types import RESTMethod, RESTRequest, WSJSONRequest
 
 
-class ApiEngineAuthTests(TestCase):
+class RkexAuthTests(TestCase):
 
     def setUp(self) -> None:
         super().setUp()
@@ -17,7 +17,7 @@ class ApiEngineAuthTests(TestCase):
         self.mock_time_provider = MagicMock()
         self.mock_time_provider.time.return_value = 1000.0
 
-        self.auth = ApiEngineAuth(
+        self.auth = RkexAuth(
             api_key=self.api_key,
             secret_key=self.secret_key,
             time_provider=self.mock_time_provider,
@@ -96,7 +96,7 @@ class ApiEngineAuthTests(TestCase):
         data = {"param_z": "value_param_z", "param_a": "value_param_a"}
         request = RESTRequest(
             method=RESTMethod.POST,
-            url="https://apiengine-mock/api/endpoint",
+            url="https://rkex-mock/api/endpoint",
             data=data,
             is_auth_required=True,
             throttler_limit_id="/api/endpoint"

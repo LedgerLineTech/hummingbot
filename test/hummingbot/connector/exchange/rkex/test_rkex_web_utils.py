@@ -1,10 +1,10 @@
 from unittest import TestCase
 
-import hummingbot.connector.exchange.apiengine.apiengine_constants as CONSTANTS
-import hummingbot.connector.exchange.apiengine.apiengine_web_utils as web_utils
+import hummingbot.connector.exchange.rkex.rkex_constants as CONSTANTS
+import hummingbot.connector.exchange.rkex.rkex_web_utils as web_utils
 
 
-class ApiEngineWebUtilsTests(TestCase):
+class RkexWebUtilsTests(TestCase):
 
     def test_public_rest_url(self):
         """Test public REST URL construction"""

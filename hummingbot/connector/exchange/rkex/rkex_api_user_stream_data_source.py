@@ -2,8 +2,8 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, List, Optional
 
-from hummingbot.connector.exchange.apiengine import apiengine_constants as CONSTANTS, apiengine_web_utils as web_utils
-from hummingbot.connector.exchange.apiengine.apiengine_auth import ApiEngineAuth
+from hummingbot.connector.exchange.rkex import rkex_constants as CONSTANTS, rkex_web_utils as web_utils
+from hummingbot.connector.exchange.rkex.rkex_auth import RkexAuth
 from hummingbot.core.data_type.user_stream_tracker_data_source import UserStreamTrackerDataSource
 from hummingbot.core.utils.async_utils import safe_ensure_future
 from hummingbot.core.web_assistant.connections.data_types import RESTMethod
@@ -12,10 +12,10 @@ from hummingbot.core.web_assistant.ws_assistant import WSAssistant
 from hummingbot.logger import HummingbotLogger
 
 if TYPE_CHECKING:
-    from hummingbot.connector.exchange.apiengine.apiengine_exchange import ApiEngineExchange
+    from hummingbot.connector.exchange.rkex.rkex_exchange import RkexExchange
 
 
-class ApiEngineAPIUserStreamDataSource(UserStreamTrackerDataSource):
+class RkexAPIUserStreamDataSource(UserStreamTrackerDataSource):
 
     LISTEN_KEY_KEEP_ALIVE_INTERVAL = 1800  # Recommended to Ping/Update listen key to keep connection alive
     HEARTBEAT_TIME_INTERVAL = 30.0
@@ -25,13 +25,13 @@ class ApiEngineAPIUserStreamDataSource(UserStreamTrackerDataSource):
     _logger: Optional[HummingbotLogger] = None
 
     def __init__(self,
-                 auth: ApiEngineAuth,
+                 auth: RkexAuth,
                  trading_pairs: List[str],
-                 connector: 'ApiEngineExchange',
+                 connector: 'RkexExchange',
                  api_factory: WebAssistantsFactory,
                  domain: str = CONSTANTS.DEFAULT_DOMAIN):
         super().__init__()
-        self._auth: ApiEngineAuth = auth
+        self._auth: RkexAuth = auth
         self._domain = domain
         self._api_factory = api_factory
         self._connector = connector
@@ -190,7 +190,7 @@ class ApiEngineAPIUserStreamDataSource(UserStreamTrackerDataSource):
         """
         Subscribes to the trade events and diff orders events through the provided websocket connection.
 
-        ApiEngine does not require any channel subscription.
+        Rkex does not require any channel subscription.
 
         :param websocket_assistant: the websocket assistant used to connect to the exchange
         """

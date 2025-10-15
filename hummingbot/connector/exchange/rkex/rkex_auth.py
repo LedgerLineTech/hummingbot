@@ -1,5 +1,5 @@
 import hmac
-from typing import Any, Dict
+from typing import Dict
 from urllib.parse import urlencode
 
 from hummingbot.connector.time_synchronizer import TimeSynchronizer
@@ -41,6 +41,7 @@ class RkexAuth(AuthBase):
         """
         headers = {
             "x-api-key": self.api_key,
+            "x-api-secret": self.secret_key
         }
 
         # Generate signature if request is provided

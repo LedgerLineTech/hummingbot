@@ -5,11 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from bidict import bidict
 
 from hummingbot.connector.constants import s_decimal_NaN
-from hummingbot.connector.exchange.rkex import (
-    rkex_constants as CONSTANTS,
-    rkex_utils,
-    rkex_web_utils as web_utils,
-)
+from hummingbot.connector.exchange.rkex import rkex_constants as CONSTANTS, rkex_utils, rkex_web_utils as web_utils
 from hummingbot.connector.exchange.rkex.rkex_api_order_book_data_source import RkexAPIOrderBookDataSource
 from hummingbot.connector.exchange.rkex.rkex_api_user_stream_data_source import RkexAPIUserStreamDataSource
 from hummingbot.connector.exchange.rkex.rkex_auth import RkexAuth
@@ -252,22 +248,43 @@ class RkexExchange(ExchangePyBase):
         for rule in filter(rkex_utils.is_exchange_information_valid, trading_pair_rules):
             try:
                 trading_pair = await self.trading_pair_associated_to_exchange_symbol(symbol=rule.get("symbol"))
-                filters = rule.get("filters")
-                price_filter = [f for f in filters if f.get("filterType") == "PRICE_FILTER"][0]
-                lot_size_filter = [f for f in filters if f.get("filterType") == "LOT_SIZE"][0]
-                min_notional_filter = [f for f in filters if f.get("filterType") in ["MIN_NOTIONAL", "NOTIONAL"]][0]
+                filters = rule.get("filters", [])
 
-                min_order_size = Decimal(lot_size_filter.get("minQty"))
-                tick_size = price_filter.get("tickSize")
-                step_size = Decimal(lot_size_filter.get("stepSize"))
-                min_notional = Decimal(min_notional_filter.get("minNotional"))
+                # Handle case where filters might be empty or missing
+                price_filters = [f for f in filters if f.get("filterType") == "PRICE_FILTER"]
+                lot_size_filters = [f for f in filters if f.get("filterType") == "LOT_SIZE"]
+                min_notional_filters = [f for f in filters if f.get("filterType") in ["MIN_NOTIONAL", "NOTIONAL"]]
+
+                # Use default values if filters are not provided
+                base_precision = rule.get("baseAssetPrecision", 8)
+                quote_precision = rule.get("quotePrecision", 8)
+
+                if price_filters:
+                    price_filter = price_filters[0]
+                    tick_size = Decimal(price_filter.get("tickSize", f"1e-{quote_precision}"))
+                else:
+                    tick_size = Decimal(f"1e-{quote_precision}")
+
+                if lot_size_filters:
+                    lot_size_filter = lot_size_filters[0]
+                    min_order_size = Decimal(lot_size_filter.get("minQty", f"1e-{base_precision}"))
+                    step_size = Decimal(lot_size_filter.get("stepSize", f"1e-{base_precision}"))
+                else:
+                    min_order_size = Decimal(f"1e-{base_precision}")
+                    step_size = Decimal(f"1e-{base_precision}")
+
+                if min_notional_filters:
+                    min_notional_filter = min_notional_filters[0]
+                    min_notional = Decimal(min_notional_filter.get("minNotional", "0.001"))
+                else:
+                    min_notional = Decimal("0.001")
 
                 retval.append(
                     TradingRule(trading_pair,
                                 min_order_size=min_order_size,
-                                min_price_increment=Decimal(tick_size),
-                                min_base_amount_increment=Decimal(step_size),
-                                min_notional_size=Decimal(min_notional)))
+                                min_price_increment=tick_size,
+                                min_base_amount_increment=step_size,
+                                min_notional_size=min_notional))
 
             except Exception:
                 self.logger().exception(f"Error parsing the trading pair rule {rule}. Skipping.")

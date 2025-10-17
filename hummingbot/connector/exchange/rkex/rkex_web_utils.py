@@ -63,6 +63,7 @@ async def get_current_server_time(
         throttler: Optional[AsyncThrottler] = None,
         domain: str = CONSTANTS.DEFAULT_DOMAIN,
 ) -> float:
+    from datetime import datetime
     throttler = throttler or create_throttler()
     api_factory = build_api_factory_without_time_synchronizer_pre_processor(throttler=throttler)
     rest_assistant = await api_factory.get_rest_assistant()
@@ -71,5 +72,8 @@ async def get_current_server_time(
         method=RESTMethod.GET,
         throttler_limit_id=CONSTANTS.SERVER_TIME_PATH_URL,
     )
-    server_time = response["serverTime"]
+    # Parse ISO 8601 date string from ServerDate field and convert to milliseconds
+    server_date_str = response["ServerDate"]
+    server_time_dt = datetime.fromisoformat(server_date_str.replace('Z', '+00:00'))
+    server_time = server_time_dt.timestamp() * 1000
     return server_time

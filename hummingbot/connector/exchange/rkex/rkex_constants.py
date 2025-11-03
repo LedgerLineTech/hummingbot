@@ -135,6 +135,10 @@ RATE_LIMITS = [
     RateLimit(limit_id=RATE_LIMITS_DOCUMENTATION_PATH_URL, limit=1200, time_interval=ONE_MINUTE,
               linked_limits=[LinkedLimitWeightPair(REQUEST_WEIGHT, 1),
                              LinkedLimitWeightPair(RAW_REQUESTS, 1)]),
+    # User stream endpoint (may not be available on API, but needed to prevent None errors)
+    RateLimit(limit_id=USER_STREAM_PATH_URL, limit=10, time_interval=ONE_SECOND,
+              linked_limits=[LinkedLimitWeightPair(REQUEST_WEIGHT, 1),
+                             LinkedLimitWeightPair(RAW_REQUESTS, 1)]),
 ]
 
 ORDER_NOT_EXIST_ERROR_CODE = -2013

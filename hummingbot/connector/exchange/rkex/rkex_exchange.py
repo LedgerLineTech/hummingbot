@@ -188,26 +188,44 @@ class RkexExchange(ExchangePyBase):
         order_result = None
         amount_str = f"{amount:f}"
         type_str = RkexExchange.rkex_order_type(order_type)
-        side_str = CONSTANTS.SIDE_BUY if trade_type is TradeType.BUY else CONSTANTS.SIDE_SELL
+
+        # RKEX API uses "bid" boolean instead of "side" string
+        is_bid = trade_type is TradeType.BUY
+
+        # Get the exchange symbol (e.g., "SOL-USDT")
         symbol = await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
-        api_params = {"symbol": symbol,
-                      "side": side_str,
-                      "quantity": amount_str,
-                      "type": type_str,
-                      "newClientOrderId": order_id}
+
+        # Extract quote currency from trading pair (e.g., "USDT" from "SOL-USDT")
+        # The API returns baseAsset/quoteAsset swapped, so quote is actually the first part
+        base, quote = trading_pair.split("-")
+
+        # RKEX API format based on Swagger documentation
+        api_params = {
+            "market": symbol,
+            "type": type_str,
+            "bid": is_bid,
+            "size": float(amount_str),
+            "currency": quote,
+            "stopPrice": 0  # Default to 0, can be updated for stop orders
+        }
+
+        # Add price for limit orders
         if order_type in [OrderType.LIMIT, OrderType.LIMIT_MAKER]:
             price_str = f"{price:f}"
-            api_params["price"] = price_str
-        if order_type == OrderType.LIMIT:
-            api_params["timeInForce"] = CONSTANTS.TIME_IN_FORCE_GTC
+            api_params["price"] = float(price_str)
+        else:
+            # For market orders, price might still be required
+            api_params["price"] = 0
 
         try:
             order_result = await self._api_post(
                 path_url=CONSTANTS.ORDER_PATH_URL,
                 data=api_params,
                 is_auth_required=True)
-            o_id = str(order_result["orderId"])
-            transact_time = order_result["transactTime"] * 1e-3
+            # Adjust response parsing based on actual RKEX response format
+            # The response might have different field names
+            o_id = str(order_result.get("orderId") or order_result.get("id") or order_result.get("_id"))
+            transact_time = order_result.get("transactTime", order_result.get("timestamp", self._time_synchronizer.time() * 1000)) * 1e-3
         except IOError as e:
             error_description = str(e)
             is_server_overloaded = ("status is 503" in error_description

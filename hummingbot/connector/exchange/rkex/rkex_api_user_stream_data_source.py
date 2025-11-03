@@ -53,6 +53,8 @@ class RkexAPIUserStreamDataSource(UserStreamTrackerDataSource):
 
         :param max_retries: Maximum number of retry attempts
         :return: Valid listen key string
+
+        NOTE: RKEX API may not support user stream endpoints. This method will fail gracefully.
         """
         retry_count = 0
         backoff_time = 1.0
@@ -68,13 +70,27 @@ class RkexAPIUserStreamDataSource(UserStreamTrackerDataSource):
                     is_auth_required=True,
                     timeout=timeout,
                 )
-                return data["listenKey"]
+                return data.get("listenKey", "")
             except asyncio.CancelledError:
                 raise
             except Exception as exception:
+                error_msg = str(exception).lower()
+                # If endpoint doesn't exist (404) or method not allowed (405), stop retrying
+                if "404" in error_msg or "405" in error_msg or "not found" in error_msg:
+                    self.logger().warning(
+                        f"User stream endpoint not available on RKEX API. "
+                        f"Order updates will be retrieved via polling instead. Error: {exception}"
+                    )
+                    # Return empty string to signal that user stream is not available
+                    return ""
+
                 retry_count += 1
                 if retry_count > max_retries:
-                    raise IOError(f"Error fetching user stream listen key after {max_retries} retries. Error: {exception}")
+                    self.logger().warning(
+                        f"Error fetching user stream listen key after {max_retries} retries. "
+                        f"User stream disabled. Error: {exception}"
+                    )
+                    return ""
 
                 self.logger().warning(f"Retry {retry_count}/{max_retries} fetching user stream listen key. Error: {repr(exception)}")
                 await self._sleep(backoff_time)
@@ -115,6 +131,8 @@ class RkexAPIUserStreamDataSource(UserStreamTrackerDataSource):
         1. Obtains a new listen key if needed
         2. Periodically refreshes the listen key to keep it active
         3. Handles errors and resets state when necessary
+
+        NOTE: If user stream is not available, this will set the event and exit gracefully.
         """
         self.logger().info("Starting listen key management task...")
         while True:
@@ -125,6 +143,17 @@ class RkexAPIUserStreamDataSource(UserStreamTrackerDataSource):
                 if self._current_listen_key is None:
                     self._current_listen_key = await self._get_listen_key()
                     self._last_listen_key_ping_ts = now
+
+                    # If listen key is empty, user stream is not available
+                    if not self._current_listen_key:
+                        self.logger().info(
+                            "User stream not available on RKEX API. "
+                            "Order updates will be retrieved via REST API polling."
+                        )
+                        self._listen_key_initialized_event.set()
+                        # Exit the loop - no user stream support
+                        return
+
                     self._listen_key_initialized_event.set()
                     self.logger().info(f"Successfully obtained listen key {self._current_listen_key}")
 
@@ -136,8 +165,8 @@ class RkexAPIUserStreamDataSource(UserStreamTrackerDataSource):
                         self._last_listen_key_ping_ts = now
                     else:
                         self.logger().error(f"Failed to refresh listen key {self._current_listen_key}. Getting new key...")
-                        raise
-                        # Continue to next iteration which will get a new key
+                        self._current_listen_key = None
+                        continue
                 await self._sleep(self.LISTEN_KEY_RETRY_INTERVAL)
             except asyncio.CancelledError:
                 self._current_listen_key = None
@@ -169,12 +198,25 @@ class RkexAPIUserStreamDataSource(UserStreamTrackerDataSource):
         Creates an instance of WSAssistant connected to the exchange.
 
         This method ensures the listen key is ready before connecting.
+
+        NOTE: If user stream is not available, this returns None and the base class
+        will fall back to REST API polling for order updates.
         """
         # Make sure the listen key management task is running
         await self._ensure_listen_key_task_running()
 
         # Wait for the listen key to be initialized
         await self._listen_key_initialized_event.wait()
+
+        # If listen key is empty, user stream is not available
+        if not self._current_listen_key:
+            self.logger().info(
+                "User stream WebSocket not available on RKEX API. "
+                "Using REST API polling for order updates."
+            )
+            # Return None to signal that WebSocket is not available
+            # The base class should handle this gracefully
+            raise NotImplementedError("User stream WebSocket not available on RKEX API")
 
         # Get a websocket assistant and connect it
         ws = await self._get_ws_assistant()

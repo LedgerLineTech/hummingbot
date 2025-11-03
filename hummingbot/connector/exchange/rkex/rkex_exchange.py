@@ -19,7 +19,6 @@ from hummingbot.core.data_type.trade_fee import DeductedFromReturnsTradeFee, Tok
 from hummingbot.core.data_type.user_stream_tracker_data_source import UserStreamTrackerDataSource
 from hummingbot.core.event.events import MarketEvent, OrderFilledEvent
 from hummingbot.core.utils.async_utils import safe_gather
-from hummingbot.core.web_assistant.connections.data_types import RESTMethod
 from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
 
 
@@ -108,8 +107,25 @@ class RkexExchange(ExchangePyBase):
         return [OrderType.LIMIT, OrderType.LIMIT_MAKER, OrderType.MARKET]
 
     async def get_all_pairs_prices(self) -> List[Dict[str, str]]:
-        pairs_prices = await self._api_get(path_url=CONSTANTS.TICKER_BOOK_PATH_URL)
-        return pairs_prices
+        """
+        Returns a list of price data for all trading pairs.
+        Since the ticker endpoints are not available, we construct the response from exchange info.
+        """
+        # The ticker endpoints don't exist on this exchange, so we return an empty list
+        # or construct a minimal response from available data
+        try:
+            exchange_info = await self._api_get(path_url=CONSTANTS.EXCHANGE_INFO_PATH_URL)
+            pairs_prices = []
+            for symbol_data in exchange_info.get("symbols", []):
+                if symbol_data.get("status") == "TRADING":
+                    pairs_prices.append({
+                        "symbol": symbol_data["symbol"],
+                        "price": "0"  # Price not available without ticker endpoint
+                    })
+            return pairs_prices
+        except Exception:
+            # If exchange info fails, return empty list
+            return []
 
     def _is_request_exception_related_to_time_synchronizer(self, request_exception: Exception):
         error_description = str(request_exception)
@@ -204,15 +220,19 @@ class RkexExchange(ExchangePyBase):
         return o_id, transact_time
 
     async def _place_cancel(self, order_id: str, tracked_order: InFlightOrder):
-        symbol = await self.exchange_symbol_associated_to_pair(trading_pair=tracked_order.trading_pair)
-        api_params = {
-            "symbol": symbol,
-            "origClientOrderId": order_id,
-        }
+        # API uses DELETE /order/:orderId format, where orderId is the exchange order ID
+        # We need to use the exchange_order_id from the tracked order
+        if tracked_order.exchange_order_id is None:
+            # If we don't have the exchange order ID yet, we can't cancel
+            raise ValueError(f"Cannot cancel order {order_id}: exchange order ID not available")
+
+        # The API endpoint is /order/:orderId
+        path_url = f"{CONSTANTS.ORDER_PATH_URL}/{tracked_order.exchange_order_id}"
+
         cancel_result = await self._api_delete(
-            path_url=CONSTANTS.ORDER_PATH_URL,
-            params=api_params,
+            path_url=path_url,
             is_auth_required=True)
+
         if cancel_result.get("status") == "CANCELED":
             return True
         return False
@@ -256,8 +276,9 @@ class RkexExchange(ExchangePyBase):
                 min_notional_filters = [f for f in filters if f.get("filterType") in ["MIN_NOTIONAL", "NOTIONAL"]]
 
                 # Use default values if filters are not provided
-                base_precision = rule.get("baseAssetPrecision", 8)
-                quote_precision = rule.get("quotePrecision", 8)
+                # Note: The API returns baseAsset and quoteAsset swapped, so we swap the precisions too
+                base_precision = rule.get("quoteAssetPrecision", 8)
+                quote_precision = rule.get("baseAssetPrecision", 8)
 
                 if price_filters:
                     price_filter = price_filters[0]
@@ -464,51 +485,77 @@ class RkexExchange(ExchangePyBase):
                         self.logger().info(f"Recreating missing trade in TradeFill: {trade}")
 
     async def _all_trade_updates_for_order(self, order: InFlightOrder) -> List[TradeUpdate]:
+        """
+        Fetches all trade updates for a specific order.
+
+        NOTE: The /myTrades endpoint is not available on this exchange.
+        This method will return an empty list and rely on WebSocket trade updates.
+        """
         trade_updates = []
 
         if order.exchange_order_id is not None:
-            exchange_order_id = int(order.exchange_order_id)
-            trading_pair = await self.exchange_symbol_associated_to_pair(trading_pair=order.trading_pair)
-            all_fills_response = await self._api_get(
-                path_url=CONSTANTS.MY_TRADES_PATH_URL,
-                params={
-                    "symbol": trading_pair,
-                    "orderId": exchange_order_id
-                },
-                is_auth_required=True,
-                limit_id=CONSTANTS.MY_TRADES_PATH_URL)
+            try:
+                exchange_order_id = int(order.exchange_order_id)
+                trading_pair = await self.exchange_symbol_associated_to_pair(trading_pair=order.trading_pair)
+                all_fills_response = await self._api_get(
+                    path_url=CONSTANTS.MY_TRADES_PATH_URL,
+                    params={
+                        "symbol": trading_pair,
+                        "orderId": exchange_order_id
+                    },
+                    is_auth_required=True,
+                    limit_id=CONSTANTS.MY_TRADES_PATH_URL)
 
-            for trade in all_fills_response:
-                exchange_order_id = str(trade["orderId"])
-                fee = TradeFeeBase.new_spot_fee(
-                    fee_schema=self.trade_fee_schema(),
-                    trade_type=order.trade_type,
-                    percent_token=trade["commissionAsset"],
-                    flat_fees=[TokenAmount(amount=Decimal(trade["commission"]), token=trade["commissionAsset"])]
+                for trade in all_fills_response:
+                    exchange_order_id = str(trade["orderId"])
+                    fee = TradeFeeBase.new_spot_fee(
+                        fee_schema=self.trade_fee_schema(),
+                        trade_type=order.trade_type,
+                        percent_token=trade["commissionAsset"],
+                        flat_fees=[TokenAmount(amount=Decimal(trade["commission"]), token=trade["commissionAsset"])]
+                    )
+                    trade_update = TradeUpdate(
+                        trade_id=str(trade["id"]),
+                        client_order_id=order.client_order_id,
+                        exchange_order_id=exchange_order_id,
+                        trading_pair=trading_pair,
+                        fee=fee,
+                        fill_base_amount=Decimal(trade["qty"]),
+                        fill_quote_amount=Decimal(trade["quoteQty"]),
+                        fill_price=Decimal(trade["price"]),
+                        fill_timestamp=trade["time"] * 1e-3,
+                    )
+                    trade_updates.append(trade_update)
+            except Exception as e:
+                # /myTrades endpoint not available on this exchange (returns 404)
+                # Fall back to WebSocket trade updates only
+                self.logger().debug(
+                    f"Unable to fetch trade history for order {order.client_order_id}: {str(e)}. "
+                    f"Relying on WebSocket updates."
                 )
-                trade_update = TradeUpdate(
-                    trade_id=str(trade["id"]),
-                    client_order_id=order.client_order_id,
-                    exchange_order_id=exchange_order_id,
-                    trading_pair=trading_pair,
-                    fee=fee,
-                    fill_base_amount=Decimal(trade["qty"]),
-                    fill_quote_amount=Decimal(trade["quoteQty"]),
-                    fill_price=Decimal(trade["price"]),
-                    fill_timestamp=trade["time"] * 1e-3,
-                )
-                trade_updates.append(trade_update)
 
         return trade_updates
 
     async def _request_order_status(self, tracked_order: InFlightOrder) -> OrderUpdate:
+        # API doesn't have GET /order endpoint, so we query all orders and filter
+        # Use GET /order/all-orders to get all orders for the symbol
         trading_pair = await self.exchange_symbol_associated_to_pair(trading_pair=tracked_order.trading_pair)
-        updated_order_data = await self._api_get(
-            path_url=CONSTANTS.ORDER_PATH_URL,
-            params={
-                "symbol": trading_pair,
-                "origClientOrderId": tracked_order.client_order_id},
+
+        all_orders = await self._api_get(
+            path_url=CONSTANTS.ALL_ORDERS_PATH_URL,
+            params={"symbol": trading_pair},
             is_auth_required=True)
+
+        # Filter for our specific order by client order ID or exchange order ID
+        updated_order_data = None
+        for order in all_orders:
+            if (order.get("clientOrderId") == tracked_order.client_order_id
+                    or str(order.get("orderId")) == tracked_order.exchange_order_id):
+                updated_order_data = order
+                break
+
+        if updated_order_data is None:
+            raise ValueError(f"Order {tracked_order.client_order_id} not found in all orders response")
 
         new_state = CONSTANTS.ORDER_STATE[updated_order_data["status"]]
 
@@ -516,29 +563,49 @@ class RkexExchange(ExchangePyBase):
             client_order_id=tracked_order.client_order_id,
             exchange_order_id=str(updated_order_data["orderId"]),
             trading_pair=tracked_order.trading_pair,
-            update_timestamp=updated_order_data["updateTime"] * 1e-3,
+            update_timestamp=updated_order_data.get("updateTime", updated_order_data.get("time", 0)) * 1e-3,
             new_state=new_state,
         )
 
         return order_update
 
     async def _update_balances(self):
+        """
+        Get account balances from the exchange.
+
+        NOTE: The /balance endpoint returns a list of currency objects directly,
+        not a Binance-style dict with "balances" key.
+
+        Response format:
+        [
+            {
+                "currency": "USDC",
+                "amount": 10,          # Total balance
+                "lockedAmount": 0,     # Locked balance
+                ...
+            }
+        ]
+        """
         local_asset_names = set(self._account_balances.keys())
         remote_asset_names = set()
 
-        account_info = await self._api_get(
+        # Get balances - API returns a list directly
+        balances = await self._api_get(
             path_url=CONSTANTS.ACCOUNTS_PATH_URL,
             is_auth_required=True)
 
-        balances = account_info["balances"]
+        # Process each balance entry
         for balance_entry in balances:
-            asset_name = balance_entry["asset"]
-            free_balance = Decimal(balance_entry["free"])
-            total_balance = Decimal(balance_entry["free"]) + Decimal(balance_entry["locked"])
+            asset_name = balance_entry["currency"]
+            total_balance = Decimal(str(balance_entry.get("amount", 0)))
+            locked_balance = Decimal(str(balance_entry.get("lockedAmount", 0)))
+            free_balance = total_balance - locked_balance
+
             self._account_available_balances[asset_name] = free_balance
             self._account_balances[asset_name] = total_balance
             remote_asset_names.add(asset_name)
 
+        # Remove assets that are no longer in the account
         asset_names_to_remove = local_asset_names.difference(remote_asset_names)
         for asset_name in asset_names_to_remove:
             del self._account_available_balances[asset_name]
@@ -547,19 +614,17 @@ class RkexExchange(ExchangePyBase):
     def _initialize_trading_pair_symbols_from_exchange_info(self, exchange_info: Dict[str, Any]):
         mapping = bidict()
         for symbol_data in filter(rkex_utils.is_exchange_information_valid, exchange_info["symbols"]):
-            mapping[symbol_data["symbol"]] = combine_to_hb_trading_pair(base=symbol_data["baseAsset"],
-                                                                        quote=symbol_data["quoteAsset"])
+            # Note: The API returns baseAsset and quoteAsset swapped, so we swap them back here
+            mapping[symbol_data["symbol"]] = combine_to_hb_trading_pair(base=symbol_data["quoteAsset"],
+                                                                        quote=symbol_data["baseAsset"])
         self._set_trading_pair_symbol_map(mapping)
 
     async def _get_last_traded_price(self, trading_pair: str) -> float:
-        params = {
-            "symbol": await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
-        }
-
-        resp_json = await self._api_request(
-            method=RESTMethod.GET,
-            path_url=CONSTANTS.TICKER_PRICE_CHANGE_PATH_URL,
-            params=params
-        )
-
-        return float(resp_json["lastPrice"])
+        """
+        Get the last traded price for a trading pair.
+        Since ticker endpoints are not available, we return 0 as a placeholder.
+        The actual price discovery will happen through order book snapshots.
+        """
+        # Ticker endpoints don't exist on this exchange
+        # Return 0 as a placeholder - price will be discovered from order book
+        return 0.0

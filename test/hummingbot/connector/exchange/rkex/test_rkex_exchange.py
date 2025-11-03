@@ -16,7 +16,6 @@ from hummingbot.connector.exchange.rkex.rkex_api_order_book_data_source import R
 from hummingbot.connector.exchange.rkex.rkex_exchange import RkexExchange
 from hummingbot.connector.trading_rule import TradingRule
 from hummingbot.core.data_type.common import OrderType, TradeType
-from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState
 from hummingbot.core.event.event_logger import EventLogger
 from hummingbot.core.event.events import MarketEvent
 from hummingbot.core.network_iterator import NetworkStatus
@@ -108,10 +107,11 @@ class TestRkexExchange(unittest.TestCase):
                 {
                     "symbol": self.ex_trading_pair,
                     "status": "TRADING",
-                    "baseAsset": self.base_asset,
-                    "quoteAsset": self.quote_asset,
+                    # Note: The API returns baseAsset and quoteAsset swapped
+                    "baseAsset": self.quote_asset,
+                    "quoteAsset": self.base_asset,
                     "baseAssetPrecision": 8,
-                    "quotePrecision": 8,
+                    "quoteAssetPrecision": 8,
                     "orderTypes": ["LIMIT", "MARKET"],
                     "filters": [
                         {

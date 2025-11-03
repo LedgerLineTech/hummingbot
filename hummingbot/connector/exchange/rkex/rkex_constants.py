@@ -13,24 +13,40 @@ WSS_URL = "wss://apiengine.demoapps.space/ws"
 PUBLIC_API_VERSION = "/"
 PRIVATE_API_VERSION = "/"
 
-# Public API endpoints
-TICKER_PRICE_CHANGE_PATH_URL = "ticker/24hr"
-TICKER_BOOK_PATH_URL = "ticker/bookTicker"
-PRICES_PATH_URL = "ticker/price"
-EXCHANGE_INFO_PATH_URL = "exchangeinfo"
-PING_PATH_URL = "ping"
-SNAPSHOT_PATH_URL = "depth"
-SERVER_TIME_PATH_URL = "time"
+# Public API endpoints (from Swagger docs)
+PING_PATH_URL = "ping"                        # ✅ GET /ping
+SERVER_TIME_PATH_URL = "time"                 # ✅ GET /time
+EXCHANGE_INFO_PATH_URL = "exchangeInfo"       # ✅ GET /exchangeInfo (camelCase!)
+LOGIN_PATH_URL = "login"                      # ✅ POST /login
 
-# Private API endpoints
-ACCOUNTS_PATH_URL = "balance"
-MY_TRADES_PATH_URL = "myTrades"
-ORDER_PATH_URL = "order"
-ALL_ORDERS_PATH_URL = "order/all-orders"
-ACTIVE_ORDERS_PATH_URL = "order/active-orders"
-USER_STREAM_PATH_URL = "userDataStream"
-API_KEY_PATH_URL = "apikey"
-API_KEY_GENERATE_PATH_URL = "apikey/generate"
+# Private API endpoints (require authentication)
+ACCOUNTS_PATH_URL = "balance"                 # ✅ GET /balance - Get User Assets balance Detail
+ORDER_PATH_URL = "order"                      # ✅ POST /order - Place an order
+ALL_ORDERS_PATH_URL = "order/all-orders"        # ✅ GET /order/all-orders - Get User Wise orders list
+ACTIVE_ORDERS_PATH_URL = "order/active-orders"  # ✅ GET /order/active-orders - Get User Wise Active order list
+CANCEL_ORDER_PATH_URL = "order"                 # ✅ DELETE /order/{orderId} - Cancel an order (ID in path)
+
+# API Key management endpoints
+API_KEY_GENERATE_PATH_URL = "apikey/generate"   # ✅ POST /apikey/generate - Generate new API Key & Secret
+API_KEY_PATH_URL = "apikey"                     # ✅ GET /apikey/{id} - Get a specific API key by ID
+API_KEY_DELETE_PATH_URL = "apikey"              # ✅ DELETE /apikey/{id} - Delete an API key by ID
+
+# ⚠️ NOT AVAILABLE - These Binance-style endpoints do not exist on this API:
+# - GET /depth - Order book depth
+# - GET /ticker/24hr - 24-hour ticker stats
+# - GET /ticker/price - Latest prices
+# - GET /ticker/bookTicker - Best bid/ask
+# - GET /trades - Recent trades
+# - GET /klines - Candlestick data
+# - GET /myTrades - User trade history
+# - WebSocket endpoints (may exist at /ws but format unknown)
+
+TICKER_PRICE_CHANGE_PATH_URL = "ticker/24hr"  # ❌ NOT AVAILABLE
+TICKER_BOOK_PATH_URL = "ticker/bookTicker"    # ❌ NOT AVAILABLE
+PRICES_PATH_URL = "ticker/price"              # ❌ NOT AVAILABLE
+SNAPSHOT_PATH_URL = "depth"                   # ❌ NOT AVAILABLE
+MY_TRADES_PATH_URL = "myTrades"               # ❌ NOT AVAILABLE
+USER_STREAM_PATH_URL = "userDataStream"       # ❌ NOT AVAILABLE
 
 # Rate limit endpoints
 RATE_LIMITS_PATH_URL = "ratelimits"

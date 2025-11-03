@@ -11,14 +11,12 @@ from hummingbot.connector.exchange.rkex.rkex_api_user_stream_data_source import 
 from hummingbot.connector.exchange.rkex.rkex_auth import RkexAuth
 from hummingbot.connector.exchange_py_base import ExchangePyBase
 from hummingbot.connector.trading_rule import TradingRule
-from hummingbot.connector.utils import TradeFillOrderDetails, combine_to_hb_trading_pair
+from hummingbot.connector.utils import combine_to_hb_trading_pair
 from hummingbot.core.data_type.common import OrderType, TradeType
 from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState, OrderUpdate, TradeUpdate
 from hummingbot.core.data_type.order_book_tracker_data_source import OrderBookTrackerDataSource
 from hummingbot.core.data_type.trade_fee import DeductedFromReturnsTradeFee, TokenAmount, TradeFeeBase
 from hummingbot.core.data_type.user_stream_tracker_data_source import UserStreamTrackerDataSource
-from hummingbot.core.event.events import MarketEvent, OrderFilledEvent
-from hummingbot.core.utils.async_utils import safe_gather
 from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
 
 
@@ -224,18 +222,19 @@ class RkexExchange(ExchangePyBase):
             "bid": is_bid,  # true for buy, false for sell
             "size": float(amount_str),
             "currency": base,  # Base asset (SOL, not USDT)
-            "stopPrice": 0  # Default to 0 for normal orders
         }
 
-        self.logger().info(f"Order parameters prepared: {api_params}")
+        self.logger().info(f"Order parameters prepared (initial): {api_params}")
 
         # Add price based on order type
         if order_type in [OrderType.LIMIT, OrderType.LIMIT_MAKER]:
             # Limit orders: use the specified price
             price_str = f"{price:f}"
             api_params["price"] = float(price_str)
+            # stopPrice must be positive - set it to the order price for normal orders
+            api_params["stopPrice"] = float(price_str)
         elif order_type == OrderType.MARKET:
-            # Market orders: get current best price from order book or use 0
+            # Market orders: get current best price from order book
             # For market buy: use best ask price
             # For market sell: use best bid price
             try:
@@ -243,20 +242,24 @@ class RkexExchange(ExchangePyBase):
                 order_book = self.get_order_book(trading_pair)
                 if is_bid:
                     # Market buy: use best ask (slightly above to ensure fill)
-                    best_ask = float(order_book.ask_entries()[0].price) if order_book.ask_entries() else 0
-                    api_params["price"] = best_ask * 1.01 if best_ask > 0 else 0  # 1% above ask
+                    best_ask = float(order_book.ask_entries()[0].price) if order_book.ask_entries() else float(price)
+                    market_price = best_ask * 1.01 if best_ask > 0 else float(price)
                 else:
                     # Market sell: use best bid (slightly below to ensure fill)
-                    best_bid = float(order_book.bid_entries()[0].price) if order_book.bid_entries() else 0
-                    api_params["price"] = best_bid * 0.99 if best_bid > 0 else 0  # 1% below bid
+                    best_bid = float(order_book.bid_entries()[0].price) if order_book.bid_entries() else float(price)
+                    market_price = best_bid * 0.99 if best_bid > 0 else float(price)
 
-                self.logger().info(f"Market order price set to {api_params['price']} based on order book")
+                api_params["price"] = market_price
+                api_params["stopPrice"] = market_price  # stopPrice must be positive
+                self.logger().info(f"Market order price set to {market_price} based on order book")
             except Exception as e:
-                self.logger().warning(f"Could not get order book price for market order: {e}. Using 0.")
-                api_params["price"] = 0
+                self.logger().warning(f"Could not get order book price for market order: {e}. Using provided price.")
+                api_params["price"] = float(price)
+                api_params["stopPrice"] = float(price)
         else:
-            # For other order types, use 0
-            api_params["price"] = 0
+            # For other order types, use provided price
+            api_params["price"] = float(price)
+            api_params["stopPrice"] = float(price)
 
         try:
             self.logger().info(f"Sending order request to {CONSTANTS.ORDER_PATH_URL}")
@@ -276,7 +279,6 @@ class RkexExchange(ExchangePyBase):
                 self.logger().error(f"Order placement failed: {error_msg}")
                 raise IOError(f"Order placement failed: {error_msg}")
 
-            order_data = order_result.get("order", {})
             transact_time = self._time_synchronizer.time()
 
             # The placement response doesn't include order ID
@@ -291,9 +293,9 @@ class RkexExchange(ExchangePyBase):
                 # Find our order by matching market, side, price, and size
                 for order in active_orders:
                     if (order.get("market") == symbol
-                        and order.get("bids") == is_bid
-                        and abs(float(order.get("price", 0)) - float(api_params["price"])) < 0.000001
-                        and abs(float(order.get("size", 0)) - float(api_params["size"])) < 0.000001):
+                            and order.get("bids") == is_bid
+                            and abs(float(order.get("price", 0)) - float(api_params["price"])) < 0.000001
+                            and abs(float(order.get("size", 0)) - float(api_params["size"])) < 0.000001):
                         # Found our order
                         o_id = str(order.get("id"))
                         # Use the order's timestamp if available
@@ -306,8 +308,8 @@ class RkexExchange(ExchangePyBase):
                     # Order not found in active orders yet
                     # Use a temporary ID and let polling update it later
                     self.logger().warning(
-                        f"Order placed successfully but not found in active orders yet. "
-                        f"Using temporary ID."
+                        "Order placed successfully but not found in active orders yet. "
+                        "Using temporary ID."
                     )
                     o_id = f"temp_{int(transact_time * 1000)}"
             except Exception as e:
@@ -673,7 +675,7 @@ class RkexExchange(ExchangePyBase):
             # Note: The API returns baseAsset and quoteAsset swapped, so we swap them back here
             # Also: exchangeInfo uses "SOLUSDT" format, but orders API uses "SOL/USDT" format
             # We need to convert the symbol to include "/" separator
-            exchange_symbol = symbol_data["symbol"]  # e.g., "SOLUSDT"
+            # symbol_data["symbol"] is e.g., "SOLUSDT"
             base_asset = symbol_data["quoteAsset"]   # Swapped!
             quote_asset = symbol_data["baseAsset"]   # Swapped!
 
@@ -686,7 +688,7 @@ class RkexExchange(ExchangePyBase):
 
             mapping[exchange_symbol_with_slash] = hb_trading_pair
 
-            self.logger().info(f"Mapped exchange symbol '{exchange_symbol_with_slash}' to '{hb_trading_pair}'")
+            # self.logger().info(f"Mapped exchange symbol '{exchange_symbol_with_slash}' to '{hb_trading_pair}'")
 
         self._set_trading_pair_symbol_map(mapping)
 

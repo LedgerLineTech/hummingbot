@@ -13,7 +13,7 @@ from hummingbot.connector.exchange_py_base import ExchangePyBase
 from hummingbot.connector.trading_rule import TradingRule
 from hummingbot.connector.utils import TradeFillOrderDetails, combine_to_hb_trading_pair
 from hummingbot.core.data_type.common import OrderType, TradeType
-from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderUpdate, TradeUpdate
+from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState, OrderUpdate, TradeUpdate
 from hummingbot.core.data_type.order_book_tracker_data_source import OrderBookTrackerDataSource
 from hummingbot.core.data_type.trade_fee import DeductedFromReturnsTradeFee, TokenAmount, TradeFeeBase
 from hummingbot.core.data_type.user_stream_tracker_data_source import UserStreamTrackerDataSource
@@ -185,47 +185,137 @@ class RkexExchange(ExchangePyBase):
                            order_type: OrderType,
                            price: Decimal,
                            **kwargs) -> Tuple[str, float]:
+        """
+        Places an order on RKEX exchange.
+
+        RKEX API format:
+        - market: "SOL/USDT" (uses "/" separator)
+        - type: "buy" or "sell" (lowercase, represents side not order type)
+        - bid: true/false (boolean)
+        - size: float (amount)
+        - price: float (limit price)
+        - stopPrice: float (stop price, 0 for normal orders)
+        - currency: "SOL" (base asset)
+        """
+        self.logger().info(
+            f"_place_order called: order_id={order_id}, trading_pair={trading_pair}, "
+            f"amount={amount}, trade_type={trade_type}, order_type={order_type}, price={price}"
+        )
+
         order_result = None
         amount_str = f"{amount:f}"
-        type_str = RkexExchange.rkex_order_type(order_type)
 
-        # RKEX API uses "bid" boolean instead of "side" string
-        is_bid = trade_type is TradeType.BUY
-
-        # Get the exchange symbol (e.g., "SOL-USDT")
+        # Get the exchange symbol (e.g., "SOL/USDT" with "/" separator)
         symbol = await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
 
-        # Extract quote currency from trading pair (e.g., "USDT" from "SOL-USDT")
-        # The API returns baseAsset/quoteAsset swapped, so quote is actually the first part
+        self.logger().info(f"Exchange symbol for {trading_pair}: {symbol}")
+
+        # Extract base and quote currency from trading pair
         base, quote = trading_pair.split("-")
 
-        # RKEX API format based on Swagger documentation
+        # RKEX API uses "bid" boolean and "type" as side
+        is_bid = trade_type is TradeType.BUY
+        side_str = "buy" if is_bid else "sell"
+
+        # RKEX API format based on actual API response
         api_params = {
             "market": symbol,
-            "type": type_str,
-            "bid": is_bid,
+            "type": side_str,  # "buy" or "sell" (side, not order type!)
+            "bid": is_bid,  # true for buy, false for sell
             "size": float(amount_str),
-            "currency": quote,
-            "stopPrice": 0  # Default to 0, can be updated for stop orders
+            "currency": base,  # Base asset (SOL, not USDT)
+            "stopPrice": 0  # Default to 0 for normal orders
         }
 
-        # Add price for limit orders
+        self.logger().info(f"Order parameters prepared: {api_params}")
+
+        # Add price based on order type
         if order_type in [OrderType.LIMIT, OrderType.LIMIT_MAKER]:
+            # Limit orders: use the specified price
             price_str = f"{price:f}"
             api_params["price"] = float(price_str)
+        elif order_type == OrderType.MARKET:
+            # Market orders: get current best price from order book or use 0
+            # For market buy: use best ask price
+            # For market sell: use best bid price
+            try:
+                # Try to get a reasonable price from the order book
+                order_book = self.get_order_book(trading_pair)
+                if is_bid:
+                    # Market buy: use best ask (slightly above to ensure fill)
+                    best_ask = float(order_book.ask_entries()[0].price) if order_book.ask_entries() else 0
+                    api_params["price"] = best_ask * 1.01 if best_ask > 0 else 0  # 1% above ask
+                else:
+                    # Market sell: use best bid (slightly below to ensure fill)
+                    best_bid = float(order_book.bid_entries()[0].price) if order_book.bid_entries() else 0
+                    api_params["price"] = best_bid * 0.99 if best_bid > 0 else 0  # 1% below bid
+
+                self.logger().info(f"Market order price set to {api_params['price']} based on order book")
+            except Exception as e:
+                self.logger().warning(f"Could not get order book price for market order: {e}. Using 0.")
+                api_params["price"] = 0
         else:
-            # For market orders, price might still be required
+            # For other order types, use 0
             api_params["price"] = 0
 
         try:
+            self.logger().info(f"Sending order request to {CONSTANTS.ORDER_PATH_URL}")
+
             order_result = await self._api_post(
                 path_url=CONSTANTS.ORDER_PATH_URL,
                 data=api_params,
                 is_auth_required=True)
-            # Adjust response parsing based on actual RKEX response format
-            # The response might have different field names
-            o_id = str(order_result.get("orderId") or order_result.get("id") or order_result.get("_id"))
-            transact_time = order_result.get("transactTime", order_result.get("timestamp", self._time_synchronizer.time() * 1000)) * 1e-3
+
+            self.logger().info(f"Order API response: {order_result}")
+
+            # Response format: {"success": true, "message": "...", "order": {...}}
+            # The actual order data is nested inside "order" field
+            if not order_result.get("success"):
+                # If not successful, raise error
+                error_msg = order_result.get("message", "Unknown error")
+                self.logger().error(f"Order placement failed: {error_msg}")
+                raise IOError(f"Order placement failed: {error_msg}")
+
+            order_data = order_result.get("order", {})
+            transact_time = self._time_synchronizer.time()
+
+            # The placement response doesn't include order ID
+            # We need to query active orders to find our order
+            await asyncio.sleep(0.5)  # Small delay to ensure order is in the system
+
+            try:
+                active_orders = await self._api_get(
+                    path_url=CONSTANTS.ACTIVE_ORDERS_PATH_URL,
+                    is_auth_required=True)
+
+                # Find our order by matching market, side, price, and size
+                for order in active_orders:
+                    if (order.get("market") == symbol
+                        and order.get("bids") == is_bid
+                        and abs(float(order.get("price", 0)) - float(api_params["price"])) < 0.000001
+                        and abs(float(order.get("size", 0)) - float(api_params["size"])) < 0.000001):
+                        # Found our order
+                        o_id = str(order.get("id"))
+                        # Use the order's timestamp if available
+                        timestamp_value = order.get("timestamp")
+                        if timestamp_value and isinstance(timestamp_value, str):
+                            transact_time = int(timestamp_value) / 1e9
+                        self.logger().info(f"Found order in active orders with ID: {o_id}")
+                        break
+                else:
+                    # Order not found in active orders yet
+                    # Use a temporary ID and let polling update it later
+                    self.logger().warning(
+                        f"Order placed successfully but not found in active orders yet. "
+                        f"Using temporary ID."
+                    )
+                    o_id = f"temp_{int(transact_time * 1000)}"
+            except Exception as e:
+                self.logger().warning(f"Could not fetch order ID from active orders: {e}. Using temporary ID.")
+                o_id = f"temp_{int(transact_time * 1000)}"
+
+            self.logger().info(f"Order placement completed: order_id={o_id}, transact_time={transact_time}")
+
         except IOError as e:
             error_description = str(e)
             is_server_overloaded = ("status is 503" in error_description
@@ -285,7 +375,13 @@ class RkexExchange(ExchangePyBase):
         retval = []
         for rule in filter(rkex_utils.is_exchange_information_valid, trading_pair_rules):
             try:
-                trading_pair = await self.trading_pair_associated_to_exchange_symbol(symbol=rule.get("symbol"))
+                # Convert symbol from "SOLUSDT" to "SOL/USDT" format (with slash)
+                # which matches our symbol mapping
+                base_asset = rule.get("quoteAsset")  # Swapped!
+                quote_asset = rule.get("baseAsset")  # Swapped!
+                exchange_symbol_with_slash = f"{base_asset}/{quote_asset}"
+
+                trading_pair = await self.trading_pair_associated_to_exchange_symbol(symbol=exchange_symbol_with_slash)
                 filters = rule.get("filters", [])
 
                 # Handle case where filters might be empty or missing
@@ -407,181 +503,123 @@ class RkexExchange(ExchangePyBase):
 
     async def _update_order_fills_from_trades(self):
         """
-        This is intended to be a backup measure to get filled events with trade ID for orders,
-        in case Rkex's user stream events are not working.
-        NOTE: It is not required to copy this functionality in other connectors.
-        This is separated from _update_order_status which only updates the order status without producing filled
-        events, since Rkex's get order endpoint does not return trade IDs.
-        The minimum poll interval for order status is 10 seconds.
+        RKEX API does not support /myTrades endpoint (returns 404).
+
+        Order fills are detected through order status changes (PENDING → FILLED)
+        via the _request_order_status() method which polls /order/active-orders
+        and /order/all-orders.
+
+        This method is disabled for RKEX.
         """
-        small_interval_last_tick = self._last_poll_timestamp / self.UPDATE_ORDER_STATUS_MIN_INTERVAL
-        small_interval_current_tick = self.current_timestamp / self.UPDATE_ORDER_STATUS_MIN_INTERVAL
-        long_interval_last_tick = self._last_poll_timestamp / self.LONG_POLL_INTERVAL
-        long_interval_current_tick = self.current_timestamp / self.LONG_POLL_INTERVAL
-
-        if (long_interval_current_tick > long_interval_last_tick
-                or (self.in_flight_orders and small_interval_current_tick > small_interval_last_tick)):
-            query_time = int(self._last_trades_poll_rkex_timestamp * 1e3)
-            self._last_trades_poll_rkex_timestamp = self._time_synchronizer.time()
-            order_by_exchange_id_map = {}
-            for order in self._order_tracker.all_fillable_orders.values():
-                order_by_exchange_id_map[order.exchange_order_id] = order
-
-            tasks = []
-            trading_pairs = self.trading_pairs
-            for trading_pair in trading_pairs:
-                params = {
-                    "symbol": await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
-                }
-                if self._last_poll_timestamp > 0:
-                    params["startTime"] = query_time
-                tasks.append(self._api_get(
-                    path_url=CONSTANTS.MY_TRADES_PATH_URL,
-                    params=params,
-                    is_auth_required=True))
-
-            self.logger().debug(f"Polling for order fills of {len(tasks)} trading pairs.")
-            results = await safe_gather(*tasks, return_exceptions=True)
-
-            for trades, trading_pair in zip(results, trading_pairs):
-
-                if isinstance(trades, Exception):
-                    self.logger().network(
-                        f"Error fetching trades update for the order {trading_pair}: {trades}.",
-                        app_warning_msg=f"Failed to fetch trade update for {trading_pair}."
-                    )
-                    continue
-                for trade in trades:
-                    exchange_order_id = str(trade["orderId"])
-                    if exchange_order_id in order_by_exchange_id_map:
-                        # This is a fill for a tracked order
-                        tracked_order = order_by_exchange_id_map[exchange_order_id]
-                        fee = TradeFeeBase.new_spot_fee(
-                            fee_schema=self.trade_fee_schema(),
-                            trade_type=tracked_order.trade_type,
-                            percent_token=trade["commissionAsset"],
-                            flat_fees=[TokenAmount(amount=Decimal(trade["commission"]), token=trade["commissionAsset"])]
-                        )
-                        trade_update = TradeUpdate(
-                            trade_id=str(trade["id"]),
-                            client_order_id=tracked_order.client_order_id,
-                            exchange_order_id=exchange_order_id,
-                            trading_pair=trading_pair,
-                            fee=fee,
-                            fill_base_amount=Decimal(trade["qty"]),
-                            fill_quote_amount=Decimal(trade["quoteQty"]),
-                            fill_price=Decimal(trade["price"]),
-                            fill_timestamp=trade["time"] * 1e-3,
-                        )
-                        self._order_tracker.process_trade_update(trade_update)
-                    elif self.is_confirmed_new_order_filled_event(str(trade["id"]), exchange_order_id, trading_pair):
-                        # This is a fill of an order registered in the DB but not tracked any more
-                        self._current_trade_fills.add(TradeFillOrderDetails(
-                            market=self.display_name,
-                            exchange_trade_id=str(trade["id"]),
-                            symbol=trading_pair))
-                        self.trigger_event(
-                            MarketEvent.OrderFilled,
-                            OrderFilledEvent(
-                                timestamp=float(trade["time"]) * 1e-3,
-                                order_id=self._exchange_order_ids.get(str(trade["orderId"]), None),
-                                trading_pair=trading_pair,
-                                trade_type=TradeType.BUY if trade["isBuyer"] else TradeType.SELL,
-                                order_type=OrderType.LIMIT_MAKER if trade["isMaker"] else OrderType.LIMIT,
-                                price=Decimal(trade["price"]),
-                                amount=Decimal(trade["qty"]),
-                                trade_fee=DeductedFromReturnsTradeFee(
-                                    flat_fees=[
-                                        TokenAmount(
-                                            trade["commissionAsset"],
-                                            Decimal(trade["commission"])
-                                        )
-                                    ]
-                                ),
-                                exchange_trade_id=str(trade["id"])
-                            ))
-                        self.logger().info(f"Recreating missing trade in TradeFill: {trade}")
+        # Do nothing - fills are detected via order status changes
+        pass
 
     async def _all_trade_updates_for_order(self, order: InFlightOrder) -> List[TradeUpdate]:
         """
         Fetches all trade updates for a specific order.
 
-        NOTE: The /myTrades endpoint is not available on this exchange.
-        This method will return an empty list and rely on WebSocket trade updates.
+        RKEX API does not support /myTrades endpoint (returns 404).
+        Fills are detected through order status changes via _request_order_status().
+
+        Returns empty list - fills are tracked via order status polling.
         """
-        trade_updates = []
-
-        if order.exchange_order_id is not None:
-            try:
-                exchange_order_id = int(order.exchange_order_id)
-                trading_pair = await self.exchange_symbol_associated_to_pair(trading_pair=order.trading_pair)
-                all_fills_response = await self._api_get(
-                    path_url=CONSTANTS.MY_TRADES_PATH_URL,
-                    params={
-                        "symbol": trading_pair,
-                        "orderId": exchange_order_id
-                    },
-                    is_auth_required=True,
-                    limit_id=CONSTANTS.MY_TRADES_PATH_URL)
-
-                for trade in all_fills_response:
-                    exchange_order_id = str(trade["orderId"])
-                    fee = TradeFeeBase.new_spot_fee(
-                        fee_schema=self.trade_fee_schema(),
-                        trade_type=order.trade_type,
-                        percent_token=trade["commissionAsset"],
-                        flat_fees=[TokenAmount(amount=Decimal(trade["commission"]), token=trade["commissionAsset"])]
-                    )
-                    trade_update = TradeUpdate(
-                        trade_id=str(trade["id"]),
-                        client_order_id=order.client_order_id,
-                        exchange_order_id=exchange_order_id,
-                        trading_pair=trading_pair,
-                        fee=fee,
-                        fill_base_amount=Decimal(trade["qty"]),
-                        fill_quote_amount=Decimal(trade["quoteQty"]),
-                        fill_price=Decimal(trade["price"]),
-                        fill_timestamp=trade["time"] * 1e-3,
-                    )
-                    trade_updates.append(trade_update)
-            except Exception as e:
-                # /myTrades endpoint not available on this exchange (returns 404)
-                # Fall back to WebSocket trade updates only
-                self.logger().debug(
-                    f"Unable to fetch trade history for order {order.client_order_id}: {str(e)}. "
-                    f"Relying on WebSocket updates."
-                )
-
-        return trade_updates
+        # Always return empty list - /myTrades endpoint doesn't exist on RKEX
+        # Order fills are detected via status changes in _request_order_status()
+        return []
 
     async def _request_order_status(self, tracked_order: InFlightOrder) -> OrderUpdate:
-        # API doesn't have GET /order endpoint, so we query all orders and filter
-        # Use GET /order/all-orders to get all orders for the symbol
+        """
+        Requests order status from the exchange.
+
+        RKEX active orders response format:
+        {
+          "id": "uuid",
+          "market": "SOL/USDT",
+          "status": "PENDING",
+          "bids": true,
+          "orderType": "BUY",
+          "orderPlacedType": "LIMIT",
+          "price": 1,
+          "size": 0.1,
+          "timestamp": "1762156744294746232"
+        }
+        """
         trading_pair = await self.exchange_symbol_associated_to_pair(trading_pair=tracked_order.trading_pair)
-
-        all_orders = await self._api_get(
-            path_url=CONSTANTS.ALL_ORDERS_PATH_URL,
-            params={"symbol": trading_pair},
-            is_auth_required=True)
-
-        # Filter for our specific order by client order ID or exchange order ID
         updated_order_data = None
-        for order in all_orders:
-            if (order.get("clientOrderId") == tracked_order.client_order_id
-                    or str(order.get("orderId")) == tracked_order.exchange_order_id):
-                updated_order_data = order
-                break
+
+        # First try active orders endpoint (more efficient)
+        try:
+            active_orders = await self._api_get(
+                path_url=CONSTANTS.ACTIVE_ORDERS_PATH_URL,
+                is_auth_required=True)
+
+            # Filter for our specific order
+            for order in active_orders:
+                # Match by market first (uses "/" format like "SOL/USDT")
+                if order.get("market") != trading_pair:
+                    continue
+                # Match by exchange order ID (field is "id" not "orderId")
+                # Note: clientOrderId is not in the response, so we can only match by exchange ID
+                if (str(order.get("id")) == tracked_order.exchange_order_id):
+                    updated_order_data = order
+                    break
+        except Exception as e:
+            self.logger().debug(f"Could not fetch from active orders: {e}, trying all orders")
+
+        # If not found in active orders, try all orders (might have different format)
+        if updated_order_data is None:
+            try:
+                all_orders = await self._api_get(
+                    path_url=CONSTANTS.ALL_ORDERS_PATH_URL,
+                    params={"symbol": trading_pair},
+                    is_auth_required=True)
+
+                for order in all_orders:
+                    # Try matching by various ID fields
+                    order_id_matches = (
+                        str(order.get("id")) == tracked_order.exchange_order_id
+                        or str(order.get("orderId")) == tracked_order.exchange_order_id
+                        or str(order.get("_id")) == tracked_order.exchange_order_id
+                    )
+                    # Also check market/symbol field
+                    market_matches = (
+                        order.get("market") == trading_pair
+                        or order.get("symbol") == trading_pair
+                    )
+
+                    if order_id_matches and market_matches:
+                        updated_order_data = order
+                        break
+            except Exception as e:
+                self.logger().debug(f"Could not fetch from all orders: {e}")
 
         if updated_order_data is None:
-            raise ValueError(f"Order {tracked_order.client_order_id} not found in all orders response")
+            raise ValueError(
+                f"Order {tracked_order.client_order_id} (exchange ID: {tracked_order.exchange_order_id}) "
+                f"not found in orders response"
+            )
 
-        new_state = CONSTANTS.ORDER_STATE[updated_order_data["status"]]
+        # Parse order status
+        order_status = updated_order_data.get("status", "UNKNOWN").upper()
+        new_state = CONSTANTS.ORDER_STATE.get(order_status, OrderState.FAILED)
+
+        # Get order ID (field is "id" in active orders response)
+        order_id = str(updated_order_data.get("id") or updated_order_data.get("orderId") or updated_order_data.get("_id"))
+
+        # Parse timestamp (might be a large string number in nanoseconds)
+        timestamp_value = updated_order_data.get("timestamp", updated_order_data.get("updateTime", updated_order_data.get("time", 0)))
+        if isinstance(timestamp_value, str):
+            # Convert from nanoseconds to seconds
+            timestamp = int(timestamp_value) / 1e9
+        else:
+            # Already in milliseconds, convert to seconds
+            timestamp = timestamp_value * 1e-3 if timestamp_value > 0 else self._time_synchronizer.time()
 
         order_update = OrderUpdate(
             client_order_id=tracked_order.client_order_id,
-            exchange_order_id=str(updated_order_data["orderId"]),
+            exchange_order_id=order_id,
             trading_pair=tracked_order.trading_pair,
-            update_timestamp=updated_order_data.get("updateTime", updated_order_data.get("time", 0)) * 1e-3,
+            update_timestamp=timestamp,
             new_state=new_state,
         )
 
@@ -633,16 +671,91 @@ class RkexExchange(ExchangePyBase):
         mapping = bidict()
         for symbol_data in filter(rkex_utils.is_exchange_information_valid, exchange_info["symbols"]):
             # Note: The API returns baseAsset and quoteAsset swapped, so we swap them back here
-            mapping[symbol_data["symbol"]] = combine_to_hb_trading_pair(base=symbol_data["quoteAsset"],
-                                                                        quote=symbol_data["baseAsset"])
+            # Also: exchangeInfo uses "SOLUSDT" format, but orders API uses "SOL/USDT" format
+            # We need to convert the symbol to include "/" separator
+            exchange_symbol = symbol_data["symbol"]  # e.g., "SOLUSDT"
+            base_asset = symbol_data["quoteAsset"]   # Swapped!
+            quote_asset = symbol_data["baseAsset"]   # Swapped!
+
+            # Create the exchange symbol in "SOL/USDT" format (with slash)
+            # This is the format used by the orders API
+            exchange_symbol_with_slash = f"{base_asset}/{quote_asset}"
+
+            # Map to Hummingbot format "SOL-USDT" (with hyphen)
+            hb_trading_pair = combine_to_hb_trading_pair(base=base_asset, quote=quote_asset)
+
+            mapping[exchange_symbol_with_slash] = hb_trading_pair
+
+            self.logger().info(f"Mapped exchange symbol '{exchange_symbol_with_slash}' to '{hb_trading_pair}'")
+
         self._set_trading_pair_symbol_map(mapping)
 
     async def _get_last_traded_price(self, trading_pair: str) -> float:
         """
         Get the last traded price for a trading pair.
-        Since ticker endpoints are not available, we return 0 as a placeholder.
-        The actual price discovery will happen through order book snapshots.
+
+        Since ticker endpoints are not available, we calculate from:
+        1. Order book mid-price (if both sides available)
+        2. Order book one-sided price (if only bids or asks)
+        3. Last filled order price
+        4. Fallback to reasonable default (100.0)
         """
-        # Ticker endpoints don't exist on this exchange
-        # Return 0 as a placeholder - price will be discovered from order book
-        return 0.0
+        try:
+            # Try to get price from order book
+            order_book = self.get_order_book(trading_pair)
+            if order_book:
+                has_bids = bool(order_book.bid_entries())
+                has_asks = bool(order_book.ask_entries())
+
+                if has_bids and has_asks:
+                    # Both sides available - use mid-price
+                    best_bid = float(order_book.bid_entries()[0].price)
+                    best_ask = float(order_book.ask_entries()[0].price)
+                    mid_price = (best_bid + best_ask) / 2.0
+                    self.logger().info(f"Using order book mid-price {mid_price} for {trading_pair}")
+                    return mid_price
+                elif has_bids:
+                    # Only bids available - use best bid
+                    best_bid = float(order_book.bid_entries()[0].price)
+                    self.logger().info(f"Using best bid price {best_bid} for {trading_pair} (no asks available)")
+                    return best_bid
+                elif has_asks:
+                    # Only asks available - use best ask
+                    best_ask = float(order_book.ask_entries()[0].price)
+                    self.logger().info(f"Using best ask price {best_ask} for {trading_pair} (no bids available)")
+                    return best_ask
+        except Exception as e:
+            self.logger().debug(f"Could not get price from order book: {e}")
+
+        try:
+            # Fallback: get price from recent filled orders
+            symbol = await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
+            all_orders = await self._api_get(
+                path_url=CONSTANTS.ALL_ORDERS_PATH_URL,
+                params={"symbol": symbol},
+                is_auth_required=True)
+
+            # Find the most recent filled order
+            for order in all_orders:
+                if order.get("status") == "FILLED" and order.get("meanMatchPrice"):
+                    price = float(order["meanMatchPrice"])
+                    self.logger().info(f"Using last filled order price {price} for {trading_pair}")
+                    return price
+
+                # Also check active orders for price reference
+                if order.get("status") == "PENDING" and order.get("price"):
+                    price = float(order["price"])
+                    if price > 0:
+                        self.logger().info(f"Using pending order price {price} for {trading_pair}")
+                        return price
+        except Exception as e:
+            self.logger().debug(f"Could not get price from orders: {e}")
+
+        # Last resort: return a reasonable default price for SOL/USDT
+        # This allows the strategy to start even without market data
+        default_price = 100.0
+        self.logger().warning(
+            f"No price data available for {trading_pair}, using default price {default_price}. "
+            f"Strategy will create orders around this price."
+        )
+        return default_price

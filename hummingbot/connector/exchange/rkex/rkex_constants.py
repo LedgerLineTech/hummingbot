@@ -139,6 +139,10 @@ RATE_LIMITS = [
     RateLimit(limit_id=USER_STREAM_PATH_URL, limit=10, time_interval=ONE_SECOND,
               linked_limits=[LinkedLimitWeightPair(REQUEST_WEIGHT, 1),
                              LinkedLimitWeightPair(RAW_REQUESTS, 1)]),
+    # My trades endpoint (not available but needed to prevent None errors)
+    RateLimit(limit_id=MY_TRADES_PATH_URL, limit=10, time_interval=ONE_SECOND,
+              linked_limits=[LinkedLimitWeightPair(REQUEST_WEIGHT, 1),
+                             LinkedLimitWeightPair(RAW_REQUESTS, 1)]),
 ]
 
 ORDER_NOT_EXIST_ERROR_CODE = -2013

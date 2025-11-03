@@ -228,6 +228,31 @@ class RkexAPIUserStreamDataSource(UserStreamTrackerDataSource):
 
         return ws
 
+    async def listen_for_user_stream(self, output: asyncio.Queue):
+        """
+        Override to disable user stream when not available.
+
+        RKEX API does not support user stream WebSocket, so we skip this entirely
+        and rely on REST API polling for order updates.
+        """
+        # Start the listen key task to check if user stream is available
+        await self._ensure_listen_key_task_running()
+        await self._listen_key_initialized_event.wait()
+
+        # If user stream is not available, just log and return (no retry loop)
+        if not self._current_listen_key:
+            self.logger().info(
+                "User stream WebSocket not available on RKEX API. "
+                "Order updates will be retrieved via REST API polling. "
+                "This is normal for this exchange."
+            )
+            # Keep this method alive but do nothing - prevents retry loop
+            while True:
+                await asyncio.sleep(60)
+        else:
+            # If somehow we do have a listen key, use parent implementation
+            await super().listen_for_user_stream(output)
+
     async def _subscribe_channels(self, websocket_assistant: WSAssistant):
         """
         Subscribes to the trade events and diff orders events through the provided websocket connection.

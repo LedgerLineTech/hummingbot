@@ -49,24 +49,96 @@ class RkexAPIOrderBookDataSource(OrderBookTrackerDataSource):
         :return: the response from the exchange (JSON dictionary)
 
         NOTE: The /depth endpoint is not implemented on this exchange API.
-        We return an empty snapshot and rely on WebSocket to populate the order book.
+        We build the order book from active orders instead.
         """
-        # The /depth endpoint does not exist on this API (returns 404)
-        # Return an empty order book snapshot that will be populated by WebSocket updates
         symbol = await self._connector.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
 
-        self.logger().warning(
-            f"Order book snapshot endpoint (/depth) not available for {trading_pair}. "
-            f"Order book will be built from WebSocket updates only."
-        )
+        # Get all active orders to build the order book
+        try:
+            # Use the active-orders endpoint to get current order book
+            from hummingbot.connector.exchange.rkex import rkex_constants as CONSTANTS, rkex_web_utils as web_utils
+            from hummingbot.core.web_assistant.connections.data_types import RESTMethod
 
-        # Return empty order book structure that matches expected format
-        return {
-            "symbol": symbol,
-            "lastUpdateId": 0,
-            "bids": [],
-            "asks": []
-        }
+            rest_assistant = await self._api_factory.get_rest_assistant()
+            all_active_orders = await rest_assistant.execute_request(
+                url=web_utils.private_rest_url(path_url=CONSTANTS.ACTIVE_ORDERS_PATH_URL),
+                method=RESTMethod.GET,
+                throttler_limit_id=CONSTANTS.ACTIVE_ORDERS_PATH_URL,
+                is_auth_required=True
+            )
+
+            # Filter orders for this trading pair and separate into bids/asks
+            bids = []
+            asks = []
+
+            self.logger().info(f"Processing {len(all_active_orders)} active orders for symbol matching: {symbol}")
+
+            for order in all_active_orders:
+                order_market = order.get("market", "")
+
+                # Match symbol - handle both "SOL/USDT" and "SOL-USDT" formats
+                symbol_match = (
+                    order_market == symbol or
+                    order_market == symbol.replace("-", "/") or
+                    order_market.replace("/", "-") == symbol
+                )
+
+                if not symbol_match:
+                    self.logger().debug(f"Skipping order for different market: {order_market} (looking for {symbol})")
+                    continue
+
+                # Skip if order doesn't have required fields
+                if "price" not in order or "size" not in order:
+                    self.logger().debug(f"Skipping order without price/size: {order}")
+                    continue
+
+                price = float(order["price"])
+                size = float(order["size"])
+
+                # Skip orders with 0 size (already filled)
+                if size <= 0:
+                    self.logger().debug(f"Skipping order with 0 size: {order}")
+                    continue
+
+                # Determine if this is a bid or ask
+                # "bids": true means buy order (bid)
+                # "bids": false means sell order (ask)
+                is_bid = order.get("bids", order.get("bid", True))
+
+                if is_bid:
+                    bids.append([price, size])
+                    self.logger().debug(f"Added bid: price={price}, size={size}")
+                else:
+                    asks.append([price, size])
+                    self.logger().debug(f"Added ask: price={price}, size={size}")
+
+            # Sort bids descending (highest first), asks ascending (lowest first)
+            bids.sort(key=lambda x: x[0], reverse=True)
+            asks.sort(key=lambda x: x[0])
+
+            self.logger().info(
+                f"Built order book for {trading_pair} from active orders: "
+                f"{len(bids)} bids, {len(asks)} asks"
+            )
+
+            return {
+                "symbol": symbol,
+                "lastUpdateId": int(time.time() * 1000),
+                "bids": bids,
+                "asks": asks
+            }
+
+        except Exception as e:
+            self.logger().warning(
+                f"Could not build order book from active orders for {trading_pair}: {e}. "
+                f"Returning empty order book."
+            )
+            return {
+                "symbol": symbol,
+                "lastUpdateId": 0,
+                "bids": [],
+                "asks": []
+            }
 
     async def _subscribe_channels(self, ws: WSAssistant):
         """
@@ -107,11 +179,28 @@ class RkexAPIOrderBookDataSource(OrderBookTrackerDataSource):
             )
             raise
 
+    async def listen_for_subscriptions(self):
+        """
+        Override to disable WebSocket subscriptions when not available.
+
+        RKEX API does not support WebSocket for order book updates, so we skip this entirely
+        and rely on REST API polling for order book snapshots.
+        """
+        self.logger().info(
+            "WebSocket order book streaming not available on RKEX API. "
+            "Order book will be updated via REST API polling. "
+            "This is normal for this exchange."
+        )
+        # Keep this method alive but do nothing - prevents retry loop
+        while True:
+            await asyncio.sleep(60)
+
     async def _connected_websocket_assistant(self) -> WSAssistant:
-        ws: WSAssistant = await self._api_factory.get_ws_assistant()
-        await ws.connect(ws_url=CONSTANTS.WSS_URL,
-                         ping_timeout=CONSTANTS.WS_HEARTBEAT_TIME_INTERVAL)
-        return ws
+        """
+        This method is not used since WebSocket is not available on RKEX API.
+        Keeping it for compatibility but it will not be called.
+        """
+        raise NotImplementedError("WebSocket not available on RKEX API")
 
     async def _order_book_snapshot(self, trading_pair: str) -> OrderBookMessage:
         snapshot: Dict[str, Any] = await self._request_order_book_snapshot(trading_pair)

@@ -100,8 +100,11 @@ class StartCommand(GatewayChainApiManager):
 
         # If macOS, disable App Nap.
         if platform.system() == "Darwin":
-            import appnope
-            appnope.nope()
+            try:
+                import appnope
+                appnope.nope()
+            except ImportError:
+                pass  # appnope not installed, ignore
 
         self._initialize_notifiers()
 

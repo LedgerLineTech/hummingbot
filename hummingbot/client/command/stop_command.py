@@ -24,8 +24,11 @@ class StopCommand:
 
         # Restore App Nap on macOS.
         if platform.system() == "Darwin":
-            import appnope
-            appnope.nap()
+            try:
+                import appnope
+                appnope.nap()
+            except ImportError:
+                pass  # appnope not installed, ignore
 
         # Handle script strategy specific cleanup first
         if self.trading_core.strategy and isinstance(self.trading_core.strategy, ScriptStrategyBase):

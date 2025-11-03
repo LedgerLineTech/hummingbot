@@ -39,6 +39,21 @@ class RkexAPIUserStreamDataSource(UserStreamTrackerDataSource):
         self._last_listen_key_ping_ts = None
         self._manage_listen_key_task = None
         self._listen_key_initialized_event = asyncio.Event()
+        self._user_stream_not_available_ts = None  # Timestamp when we determined user stream is unavailable
+
+    @property
+    def last_recv_time(self) -> float:
+        """
+        Returns the time of the last received message.
+        For RKEX, since user stream (WebSocket) is not available, we return a timestamp
+        indicating the REST polling is active instead.
+        """
+        if self._user_stream_not_available_ts is not None:
+            # User stream not available, but REST polling is active
+            return self._user_stream_not_available_ts
+        if self._ws_assistant:
+            return self._ws_assistant.last_recv_time
+        return 0
 
     async def _get_ws_assistant(self) -> WSAssistant:
         """
@@ -150,6 +165,8 @@ class RkexAPIUserStreamDataSource(UserStreamTrackerDataSource):
                             "User stream not available on RKEX API. "
                             "Order updates will be retrieved via REST API polling."
                         )
+                        # Set timestamp to mark user stream as "initialized" (using REST fallback)
+                        self._user_stream_not_available_ts = time.time()
                         self._listen_key_initialized_event.set()
                         # Exit the loop - no user stream support
                         return

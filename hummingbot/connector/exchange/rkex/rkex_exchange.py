@@ -737,18 +737,33 @@ class RkexExchange(ExchangePyBase):
                 params={"symbol": symbol},
                 is_auth_required=True)
 
-            # Find the most recent filled order
+            self.logger().debug(f"Fetching price from {len(all_orders)} orders for {trading_pair} (symbol: {symbol})")
+
+            # Find the most recent filled order for THIS trading pair
             for order in all_orders:
+                order_market = order.get("market", "")
+
+                # CRITICAL: Filter by market to avoid using prices from other pairs
+                if order_market != symbol:
+                    self.logger().debug(f"Skipping order from different market: {order_market} (looking for {symbol})")
+                    continue
+
+                # Check filled orders first (most reliable price)
                 if order.get("status") == "FILLED" and order.get("meanMatchPrice"):
                     price = float(order["meanMatchPrice"])
-                    self.logger().info(f"Using last filled order price {price} for {trading_pair}")
+                    self.logger().info(f"Using last filled order price {price} for {trading_pair} (from market {order_market})")
                     return price
 
-                # Also check active orders for price reference
+            # If no filled orders, check pending orders for price reference
+            for order in all_orders:
+                order_market = order.get("market", "")
+                if order_market != symbol:
+                    continue
+
                 if order.get("status") == "PENDING" and order.get("price"):
                     price = float(order["price"])
                     if price > 0:
-                        self.logger().info(f"Using pending order price {price} for {trading_pair}")
+                        self.logger().info(f"Using pending order price {price} for {trading_pair} (from market {order_market})")
                         return price
         except Exception as e:
             self.logger().debug(f"Could not get price from orders: {e}")

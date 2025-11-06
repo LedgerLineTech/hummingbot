@@ -8,10 +8,11 @@ from hummingbot.core.web_assistant.connections.data_types import RESTMethod, RES
 
 
 class RkexAuth(AuthBase):
-    def __init__(self, api_key: str, secret_key: str, time_provider: TimeSynchronizer):
+    def __init__(self, api_key: str, secret_key: str, time_provider: TimeSynchronizer, bearer_token: str = None):
         self.api_key = api_key
         self.secret_key = secret_key
         self.time_provider = time_provider
+        self.bearer_token = bearer_token
 
     async def rest_authenticate(self, request: RESTRequest) -> RESTRequest:
         """
@@ -35,14 +36,18 @@ class RkexAuth(AuthBase):
 
     def header_for_authentication(self, request: RESTRequest = None) -> Dict[str, str]:
         """
-        Generates authentication headers using API key and secret.
+        Generates authentication headers using API key, secret, and bearer token.
         If the API uses HMAC signature, it will be generated here.
-        Otherwise, it uses simple API key/secret header authentication.
+        Otherwise, it uses simple API key/secret header authentication with bearer token.
         """
         headers = {
             "x-api-key": self.api_key,
             "x-api-secret": self.secret_key
         }
+
+        # Add bearer token if available
+        if self.bearer_token:
+            headers["Authorization"] = f"Bearer {self.bearer_token}"
 
         # Generate signature if request is provided
         if request is not None:
@@ -67,3 +72,16 @@ class RkexAuth(AuthBase):
             headers["x-signature"] = signature
 
         return headers
+
+    def set_bearer_token(self, token: str):
+        """
+        Sets the bearer token for authentication.
+        """
+        self.bearer_token = token
+
+    def set_api_credentials(self, api_key: str, secret_key: str):
+        """
+        Sets the API key and secret for authentication.
+        """
+        self.api_key = api_key
+        self.secret_key = secret_key

@@ -26,20 +26,24 @@ class RkexExchange(ExchangePyBase):
     web_utils = web_utils
 
     def __init__(self,
-                 rkex_api_key: str,
-                 rkex_api_secret: str,
+                 rkex_email: str,
+                 rkex_password: str,
                  balance_asset_limit: Optional[Dict[str, Dict[str, Decimal]]] = None,
                  rate_limits_share_pct: Decimal = Decimal("100"),
                  trading_pairs: Optional[List[str]] = None,
                  trading_required: bool = True,
                  domain: str = CONSTANTS.DEFAULT_DOMAIN,
                  ):
-        self.api_key = rkex_api_key
-        self.secret_key = rkex_api_secret
+        self._email = rkex_email
+        self._password = rkex_password
+        self.api_key = ""  # Will be set after login and API key generation
+        self.secret_key = ""  # Will be set after login and API key generation
+        self._bearer_token = None  # Will be set after login
         self._domain = domain
         self._trading_required = trading_required
         self._trading_pairs = trading_pairs
         self._last_trades_poll_rkex_timestamp = 1.0
+        self._auth_initialized = False
         super().__init__(balance_asset_limit, rate_limits_share_pct)
 
     @staticmethod
@@ -55,11 +59,36 @@ class RkexExchange(ExchangePyBase):
         return RkexAuth(
             api_key=self.api_key,
             secret_key=self.secret_key,
-            time_provider=self._time_synchronizer)
+            time_provider=self._time_synchronizer,
+            bearer_token=self._bearer_token)
 
     @property
     def name(self) -> str:
         return "rkex"
+
+    def get_order_book(self, trading_pair: str):
+        """
+        Override to add debugging for order book access.
+        """
+        self.logger().info(f"get_order_book called with trading_pair: {trading_pair}")
+        self.logger().info(f"Available order books: {list(self.order_book_tracker.order_books.keys())}")
+
+        if trading_pair not in self.order_book_tracker.order_books:
+            self.logger().error(f"Order book not found for '{trading_pair}'! Available: {list(self.order_book_tracker.order_books.keys())}")
+            return None
+
+        order_book = self.order_book_tracker.order_books[trading_pair]
+        bids_list = list(order_book.bid_entries())
+        asks_list = list(order_book.ask_entries())
+        self.logger().info(f"Order book for {trading_pair}: {len(bids_list)} bids, {len(asks_list)} asks")
+
+        # Log actual prices
+        if len(bids_list) > 0:
+            self.logger().info(f"Best bid price: {bids_list[0].price}, amount: {bids_list[0].amount}")
+        if len(asks_list) > 0:
+            self.logger().info(f"Best ask price: {asks_list[0].price}, amount: {asks_list[0].amount}")
+
+        return order_book
 
     @property
     def rate_limits_rules(self):
@@ -104,26 +133,212 @@ class RkexExchange(ExchangePyBase):
     def supported_order_types(self):
         return [OrderType.LIMIT, OrderType.LIMIT_MAKER, OrderType.MARKET]
 
+    def get_maker_order_type(self):
+        """
+        Override to use MARKET orders instead of LIMIT_MAKER for immediate fills.
+        This makes pure_market_making strategy place market orders that execute immediately.
+        """
+        return OrderType.MARKET
+
     async def get_all_pairs_prices(self) -> List[Dict[str, str]]:
         """
-        Returns a list of price data for all trading pairs.
-        Since the ticker endpoints are not available, we construct the response from exchange info.
+        Returns a list of price data for all trading pairs from the /price endpoint.
         """
-        # The ticker endpoints don't exist on this exchange, so we return an empty list
-        # or construct a minimal response from available data
         try:
-            exchange_info = await self._api_get(path_url=CONSTANTS.EXCHANGE_INFO_PATH_URL)
+            # Call GET /price endpoint to fetch all prices
+            response = await self._api_get(path_url=CONSTANTS.PRICE_PATH_URL)
+
+            # API returns: [{"symbol": "BNBUSDT", "price": "15"}, ...]
             pairs_prices = []
-            for symbol_data in exchange_info.get("symbols", []):
-                if symbol_data.get("status") == "TRADING":
-                    pairs_prices.append({
-                        "symbol": symbol_data["symbol"],
-                        "price": "0"  # Price not available without ticker endpoint
-                    })
+            for item in response:
+                pairs_prices.append({
+                    "symbol": item["symbol"],
+                    "price": item["price"]
+                })
             return pairs_prices
-        except Exception:
-            # If exchange info fails, return empty list
+        except Exception as e:
+            self.logger().error(f"Failed to fetch prices from /price endpoint: {e}", exc_info=True)
             return []
+
+    async def get_last_traded_prices(self, trading_pairs: List[str] = None) -> Dict[str, float]:
+        """
+        Returns a dictionary of trading pairs to their last traded prices.
+
+        :param trading_pairs: Optional list of trading pairs to get prices for
+        :return: Dictionary mapping trading pair to price (e.g., {"SOL-USDC": 170.0})
+        """
+        try:
+            # Call GET /price endpoint to fetch all prices
+            response = await self._api_get(path_url=CONSTANTS.PRICE_PATH_URL)
+
+            # API returns: [{"symbol": "SOLUSDC", "price": "170"}, ...]
+            # Build a map of exchange symbols to prices
+            symbol_to_price = {item["symbol"]: float(item["price"]) for item in response}
+
+            self.logger().info(f"Fetched {len(symbol_to_price)} prices from /price endpoint")
+            if trading_pairs:
+                self.logger().info(f"Requested prices for trading pairs: {trading_pairs}")
+
+            prices = {}
+
+            # If specific trading pairs were requested, convert them to exchange symbols and look up prices
+            # If no specific pairs requested and we have trading rules, use those
+            # Otherwise, try to match all available symbols from the API
+            if trading_pairs:
+                pairs_to_process = trading_pairs
+            elif self._trading_rules:
+                pairs_to_process = list(self._trading_rules.keys())
+            else:
+                # No specific pairs and no trading rules yet - try to reverse-map all API symbols
+                pairs_to_process = []
+                self.logger().warning("No trading pairs specified and no trading rules loaded yet")
+
+            for trading_pair in pairs_to_process:
+                try:
+                    # Convert trading pair to exchange symbol
+                    # For rkex, the exchange symbol format is like "ADAXLM" (no separator) or "ADA/XLM" (with slash)
+                    base, quote = trading_pair.split("-")
+
+                    # Try different symbol formats
+                    possible_symbols = [
+                        f"{base}{quote}",      # ADAXLM
+                        f"{quote}{base}",      # XLMADA (reversed)
+                        f"{base}/{quote}",     # ADA/XLM
+                        f"{quote}/{base}",     # XLM/ADA (reversed)
+                    ]
+
+                    price_found = False
+                    for symbol in possible_symbols:
+                        if symbol in symbol_to_price:
+                            prices[trading_pair] = symbol_to_price[symbol]
+                            self.logger().info(f"Matched {trading_pair} to symbol {symbol} with price {symbol_to_price[symbol]}")
+                            price_found = True
+                            break
+
+                    if not price_found:
+                        self.logger().warning(
+                            f"Could not find price for {trading_pair}. "
+                            f"Tried symbols: {possible_symbols}. "
+                            f"Available symbols in API: {list(symbol_to_price.keys())}"
+                        )
+
+                except Exception as e:
+                    self.logger().error(f"Error processing trading pair {trading_pair}: {e}", exc_info=True)
+                    continue
+
+            self.logger().info(f"Returning prices for {len(prices)} trading pairs: {prices}")
+            return prices
+
+        except Exception as e:
+            self.logger().error(f"Failed to fetch last traded prices: {e}", exc_info=True)
+            return {}
+
+    async def _initialize_auth(self):
+        """
+        Initializes authentication by:
+        1. Logging in with email/password to get bearer token
+        2. Using bearer token to generate API key and secret
+        3. Storing credentials for future authenticated requests
+        """
+        if self._auth_initialized:
+            return
+
+        try:
+            self.logger().info("Initializing authentication...")
+
+            # Step 1: Login to get bearer token
+            login_response = await self._login()
+            self._bearer_token = login_response["token"]
+            self.logger().info("Successfully obtained bearer token")
+
+            # Step 2: Generate API key and secret using bearer token
+            api_key_response = await self._generate_api_key()
+            self.api_key = api_key_response["data"]["key"]
+            self.secret_key = api_key_response["data"]["secret"]
+            self.logger().info("Successfully generated API key and secret")
+
+            # Update the auth object with the new credentials
+            if hasattr(self, "_auth") and self._auth is not None:
+                self._auth.set_bearer_token(self._bearer_token)
+                self._auth.set_api_credentials(self.api_key, self.secret_key)
+
+            self._auth_initialized = True
+            self.logger().info("Authentication initialization complete")
+
+        except Exception as e:
+            self.logger().error(f"Failed to initialize authentication: {e}", exc_info=True)
+            raise
+
+    async def _login(self) -> Dict[str, Any]:
+        """
+        Performs login with email and password to obtain bearer token.
+
+        Returns:
+            Login response containing token, userId, roles, etc.
+        """
+        from hummingbot.core.web_assistant.connections.data_types import RESTMethod
+
+        rest_assistant = await self._web_assistants_factory.get_rest_assistant()
+
+        login_data = {
+            "email": self._email,
+            "password": self._password
+        }
+
+        self.logger().info(f"Logging in with email: {self._email}")
+
+        response = await rest_assistant.execute_request(
+            url=web_utils.public_rest_url(path_url=CONSTANTS.LOGIN_PATH_URL),
+            method=RESTMethod.POST,
+            data=login_data,
+            throttler_limit_id=CONSTANTS.LOGIN_PATH_URL,
+            is_auth_required=False
+        )
+
+        return response
+
+    async def _generate_api_key(self) -> Dict[str, Any]:
+        """
+        Generates API key and secret using the bearer token.
+
+        Returns:
+            API key generation response containing key, secret, etc.
+        """
+        from hummingbot.core.web_assistant.connections.data_types import RESTMethod
+
+        # Create a temporary auth object with just the bearer token for this request
+        temp_auth = RkexAuth(
+            api_key="",
+            secret_key="",
+            time_provider=self._time_synchronizer,
+            bearer_token=self._bearer_token
+        )
+
+        # Create a temporary web assistant factory with the temporary auth
+        temp_factory = web_utils.build_api_factory(
+            throttler=self._throttler,
+            time_synchronizer=self._time_synchronizer,
+            domain=self._domain,
+            auth=temp_auth
+        )
+
+        rest_assistant = await temp_factory.get_rest_assistant()
+
+        api_key_data = {
+            "name": "hummingbot_api_key"
+        }
+
+        self.logger().info("Generating API key using bearer token")
+
+        response = await rest_assistant.execute_request(
+            url=web_utils.private_rest_url(path_url=CONSTANTS.API_KEY_GENERATE_PATH_URL),
+            method=RESTMethod.POST,
+            data=api_key_data,
+            throttler_limit_id=CONSTANTS.API_KEY_GENERATE_PATH_URL,
+            is_auth_required=True
+        )
+
+        return response
 
     def _is_request_exception_related_to_time_synchronizer(self, request_exception: Exception):
         error_description = str(request_exception)
@@ -195,10 +410,32 @@ class RkexExchange(ExchangePyBase):
         - stopPrice: float (stop price, 0 for normal orders)
         - currency: "SOL" (base asset)
         """
+        # Initialize authentication before first authenticated request
+        if not self._auth_initialized:
+            await self._initialize_auth()
+
         self.logger().info(
             f"_place_order called: order_id={order_id}, trading_pair={trading_pair}, "
             f"amount={amount}, trade_type={trade_type}, order_type={order_type}, price={price}"
         )
+
+        if price == 0 or price is None:
+            self.logger().error(f"CRITICAL: Order price is {price} for {trading_pair}. This will cause order rejection!")
+            # Log order book status
+            try:
+                order_book = self.get_order_book(trading_pair)
+                if order_book:
+                    bid_count = len(order_book.bid_entries()) if order_book.bid_entries() else 0
+                    ask_count = len(order_book.ask_entries()) if order_book.ask_entries() else 0
+                    self.logger().error(f"Order book has {bid_count} bids and {ask_count} asks")
+                    if bid_count > 0:
+                        self.logger().error(f"Best bid: {order_book.bid_entries()[0].price}")
+                    if ask_count > 0:
+                        self.logger().error(f"Best ask: {order_book.ask_entries()[0].price}")
+                else:
+                    self.logger().error("Order book is None!")
+            except Exception as e:
+                self.logger().error(f"Could not check order book: {e}")
 
         order_result = None
         amount_str = f"{amount:f}"
@@ -242,16 +479,29 @@ class RkexExchange(ExchangePyBase):
                 order_book = self.get_order_book(trading_pair)
                 if is_bid:
                     # Market buy: use best ask (slightly above to ensure fill)
-                    best_ask = float(order_book.ask_entries()[0].price) if order_book.ask_entries() else float(price)
-                    market_price = best_ask * 1.01 if best_ask > 0 else float(price)
+                    # Convert generator to list to access first element
+                    ask_entries = list(order_book.ask_entries())
+                    if ask_entries:
+                        best_ask = float(ask_entries[0].price)
+                        market_price = best_ask * 1.01  # 1% above to ensure immediate fill
+                        self.logger().info(f"Market BUY: best ask={best_ask}, using price={market_price}")
+                    else:
+                        market_price = float(price) * 1.01
+                        self.logger().info(f"Market BUY: no asks, using provided price * 1.01 = {market_price}")
                 else:
                     # Market sell: use best bid (slightly below to ensure fill)
-                    best_bid = float(order_book.bid_entries()[0].price) if order_book.bid_entries() else float(price)
-                    market_price = best_bid * 0.99 if best_bid > 0 else float(price)
+                    # Convert generator to list to access first element
+                    bid_entries = list(order_book.bid_entries())
+                    if bid_entries:
+                        best_bid = float(bid_entries[0].price)
+                        market_price = best_bid * 0.99  # 1% below to ensure immediate fill
+                        self.logger().info(f"Market SELL: best bid={best_bid}, using price={market_price}")
+                    else:
+                        market_price = float(price) * 0.99
+                        self.logger().info(f"Market SELL: no bids, using provided price * 0.99 = {market_price}")
 
                 api_params["price"] = market_price
                 api_params["stopPrice"] = market_price  # stopPrice must be positive
-                self.logger().info(f"Market order price set to {market_price} based on order book")
             except Exception as e:
                 self.logger().warning(f"Could not get order book price for market order: {e}. Using provided price.")
                 api_params["price"] = float(price)
@@ -330,6 +580,10 @@ class RkexExchange(ExchangePyBase):
         return o_id, transact_time
 
     async def _place_cancel(self, order_id: str, tracked_order: InFlightOrder):
+        # Initialize authentication before first authenticated request
+        if not self._auth_initialized:
+            await self._initialize_auth()
+
         # API uses DELETE /order/:orderId format, where orderId is the exchange order ID
         # We need to use the exchange_order_id from the tracked order
         if tracked_order.exchange_order_id is None:
@@ -400,7 +654,10 @@ class RkexExchange(ExchangePyBase):
                     price_filter = price_filters[0]
                     tick_size = Decimal(price_filter.get("tickSize", f"1e-{quote_precision}"))
                 else:
-                    tick_size = Decimal(f"1e-{quote_precision}")
+                    # If quote_precision is 0 or too low, use a sensible default
+                    # to avoid tick_size of 1.0 which would round small prices to 0
+                    effective_quote_precision = max(quote_precision, 4)
+                    tick_size = Decimal(f"1e-{effective_quote_precision}")
 
                 if lot_size_filters:
                     lot_size_filter = lot_size_filters[0]
@@ -415,6 +672,14 @@ class RkexExchange(ExchangePyBase):
                     min_notional = Decimal(min_notional_filter.get("minNotional", "0.001"))
                 else:
                     min_notional = Decimal("0.001")
+
+                # Log trading rule details for debugging
+                self.logger().info(
+                    f"Trading rule for {trading_pair}: "
+                    f"min_order_size={min_order_size}, tick_size={tick_size}, "
+                    f"step_size={step_size}, min_notional={min_notional}, "
+                    f"base_precision={base_precision}, quote_precision={quote_precision}"
+                )
 
                 retval.append(
                     TradingRule(trading_pair,
@@ -546,6 +811,10 @@ class RkexExchange(ExchangePyBase):
           "timestamp": "1762156744294746232"
         }
         """
+        # Initialize authentication before first authenticated request
+        if not self._auth_initialized:
+            await self._initialize_auth()
+
         trading_pair = await self.exchange_symbol_associated_to_pair(trading_pair=tracked_order.trading_pair)
         updated_order_data = None
 
@@ -644,6 +913,10 @@ class RkexExchange(ExchangePyBase):
             }
         ]
         """
+        # Initialize authentication before first authenticated request
+        if not self._auth_initialized:
+            await self._initialize_auth()
+
         local_asset_names = set(self._account_balances.keys())
         remote_asset_names = set()
 
@@ -702,12 +975,22 @@ class RkexExchange(ExchangePyBase):
         3. Last filled order price
         4. Fallback to reasonable default (100.0)
         """
+        # Initialize authentication before first authenticated request
+        if not self._auth_initialized:
+            await self._initialize_auth()
+
+        self.logger().info(f"_get_last_traded_price called for {trading_pair}")
+
         try:
             # Try to get price from order book
             order_book = self.get_order_book(trading_pair)
+            self.logger().info(f"Order book for {trading_pair}: {order_book is not None}")
+
             if order_book:
                 has_bids = bool(order_book.bid_entries())
                 has_asks = bool(order_book.ask_entries())
+
+                self.logger().info(f"Order book for {trading_pair}: has_bids={has_bids}, has_asks={has_asks}")
 
                 if has_bids and has_asks:
                     # Both sides available - use mid-price
@@ -726,8 +1009,12 @@ class RkexExchange(ExchangePyBase):
                     best_ask = float(order_book.ask_entries()[0].price)
                     self.logger().info(f"Using best ask price {best_ask} for {trading_pair} (no bids available)")
                     return best_ask
+                else:
+                    self.logger().warning(f"Order book for {trading_pair} exists but has NO bids and NO asks!")
+            else:
+                self.logger().warning(f"Order book for {trading_pair} is None!")
         except Exception as e:
-            self.logger().debug(f"Could not get price from order book: {e}")
+            self.logger().error(f"Could not get price from order book: {e}", exc_info=True)
 
         try:
             # Fallback: get price from recent filled orders
@@ -737,7 +1024,7 @@ class RkexExchange(ExchangePyBase):
                 params={"symbol": symbol},
                 is_auth_required=True)
 
-            self.logger().debug(f"Fetching price from {len(all_orders)} orders for {trading_pair} (symbol: {symbol})")
+            self.logger().info(f"Fetching price from {len(all_orders)} orders for {trading_pair} (symbol: {symbol})")
 
             # Find the most recent filled order for THIS trading pair
             for order in all_orders:

@@ -47,94 +47,79 @@ class RkexAPIOrderBookDataSource(OrderBookTrackerDataSource):
         :param trading_pair: the trading pair for which the order book will be retrieved
 
         :return: the response from the exchange (JSON dictionary)
-
-        NOTE: The /depth endpoint is not implemented on this exchange API.
-        We build the order book from active orders instead.
         """
-        symbol = await self._connector.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
+        from hummingbot.connector.exchange.rkex import rkex_web_utils as web_utils
+        from hummingbot.core.web_assistant.connections.data_types import RESTMethod
 
-        # Get all active orders to build the order book
+        # Extract base and quote currency from trading pair (e.g., "SOL-USDC" -> "SOL", "USDC")
+        base, quote = trading_pair.split("-")
+
         try:
-            # Use the active-orders endpoint to get current order book
-            from hummingbot.connector.exchange.rkex import rkex_constants as CONSTANTS, rkex_web_utils as web_utils
-            from hummingbot.core.web_assistant.connections.data_types import RESTMethod
-
             rest_assistant = await self._api_factory.get_rest_assistant()
-            all_active_orders = await rest_assistant.execute_request(
-                url=web_utils.private_rest_url(path_url=CONSTANTS.ACTIVE_ORDERS_PATH_URL),
-                method=RESTMethod.GET,
-                throttler_limit_id=CONSTANTS.ACTIVE_ORDERS_PATH_URL,
-                is_auth_required=True
+
+            # Call POST /orderBook endpoint with baseCoin, quoteCoin, and limit
+            request_data = {
+                "baseCoin": base,
+                "quoteCoin": quote,
+                "limit": 100
+            }
+
+            url = web_utils.public_rest_url(path_url=CONSTANTS.ORDER_BOOK_PATH_URL)
+            self.logger().info(f"Requesting order book for {trading_pair} with params: {request_data}")
+            self.logger().info(f"Order book URL: {url}")
+
+            response = await rest_assistant.execute_request(
+                url=url,
+                method=RESTMethod.POST,
+                data=request_data,
+                throttler_limit_id=CONSTANTS.ORDER_BOOK_PATH_URL,
+                is_auth_required=False
             )
 
-            # Filter orders for this trading pair and separate into bids/asks
-            bids = []
-            asks = []
+            self.logger().info(f"Order book response received: {response}")
 
-            self.logger().info(f"Processing {len(all_active_orders)} active orders for symbol matching: {symbol}")
+            # Convert response format from API to hummingbot format
+            # API returns: {"asks": [{"price": 1.0003, "size": 1}, ...], "bids": [{"price": 0.999, "size": 1}, ...]}
+            # We need: {"bids": [[0.999, 1], ...], "asks": [[1.0003, 1], ...]}
 
-            for order in all_active_orders:
-                order_market = order.get("market", "")
-
-                # Match symbol - handle both "SOL/USDT" and "SOL-USDT" formats
-                symbol_match = (
-                    order_market == symbol or
-                    order_market == symbol.replace("-", "/") or
-                    order_market.replace("/", "-") == symbol
-                )
-
-                if not symbol_match:
-                    self.logger().debug(f"Skipping order for different market: {order_market} (looking for {symbol})")
-                    continue
-
-                # Skip if order doesn't have required fields
-                if "price" not in order or "size" not in order:
-                    self.logger().debug(f"Skipping order without price/size: {order}")
-                    continue
-
-                price = float(order["price"])
-                size = float(order["size"])
-
-                # Skip orders with 0 size (already filled)
-                if size <= 0:
-                    self.logger().debug(f"Skipping order with 0 size: {order}")
-                    continue
-
-                # Determine if this is a bid or ask
-                # "bids": true means buy order (bid)
-                # "bids": false means sell order (ask)
-                is_bid = order.get("bids", order.get("bid", True))
-
-                if is_bid:
-                    bids.append([price, size])
-                    self.logger().debug(f"Added bid: price={price}, size={size}")
-                else:
-                    asks.append([price, size])
-                    self.logger().debug(f"Added ask: price={price}, size={size}")
+            bids = [[float(item["price"]), float(item["size"])] for item in response.get("bids", [])]
+            asks = [[float(item["price"]), float(item["size"])] for item in response.get("asks", [])]
 
             # Sort bids descending (highest first), asks ascending (lowest first)
             bids.sort(key=lambda x: x[0], reverse=True)
             asks.sort(key=lambda x: x[0])
 
             self.logger().info(
-                f"Built order book for {trading_pair} from active orders: "
-                f"{len(bids)} bids, {len(asks)} asks"
+                f"Fetched order book for {trading_pair}: {len(bids)} bids, {len(asks)} asks"
             )
 
-            return {
-                "symbol": symbol,
+            if len(bids) == 0:
+                self.logger().warning(f"WARNING: Order book for {trading_pair} has NO BIDS!")
+            if len(asks) == 0:
+                self.logger().warning(f"WARNING: Order book for {trading_pair} has NO ASKS!")
+
+            if len(bids) > 0:
+                self.logger().info(f"Best bid for {trading_pair}: {bids[0]}")
+            if len(asks) > 0:
+                self.logger().info(f"Best ask for {trading_pair}: {asks[0]}")
+
+            result = {
                 "lastUpdateId": int(time.time() * 1000),
                 "bids": bids,
                 "asks": asks
             }
 
+            self.logger().info(f"Returning snapshot with {len(bids)} bids, {len(asks)} asks, first bid: {bids[0] if bids else 'none'}, first ask: {asks[0] if asks else 'none'}")
+
+            return result
+
         except Exception as e:
-            self.logger().warning(
-                f"Could not build order book from active orders for {trading_pair}: {e}. "
-                f"Returning empty order book."
+            self.logger().error(
+                f"Failed to fetch order book for {trading_pair}: {e}. "
+                f"Returning empty order book.",
+                exc_info=True
             )
             return {
-                "symbol": symbol,
                 "lastUpdateId": 0,
                 "bids": [],
                 "asks": []
@@ -181,19 +166,32 @@ class RkexAPIOrderBookDataSource(OrderBookTrackerDataSource):
 
     async def listen_for_subscriptions(self):
         """
-        Override to disable WebSocket subscriptions when not available.
-
-        RKEX API does not support WebSocket for order book updates, so we skip this entirely
-        and rely on REST API polling for order book snapshots.
+        Since RKEX API does not support WebSocket, poll order book snapshots via REST API.
+        This replaces the WebSocket subscription mechanism.
         """
         self.logger().info(
             "WebSocket order book streaming not available on RKEX API. "
-            "Order book will be updated via REST API polling. "
-            "This is normal for this exchange."
+            "Using REST API polling for order book updates (every 5 seconds)."
         )
-        # Keep this method alive but do nothing - prevents retry loop
+
         while True:
-            await asyncio.sleep(60)
+            try:
+                # Fetch order book snapshots for all trading pairs
+                for trading_pair in self._trading_pairs:
+                    try:
+                        snapshot_msg = await self._order_book_snapshot(trading_pair)
+                        self._message_queue[self._snapshot_messages_queue_key].put_nowait(snapshot_msg)
+                    except Exception as e:
+                        self.logger().error(f"Error fetching order book for {trading_pair}: {e}", exc_info=True)
+
+                # Poll every 5 seconds
+                await asyncio.sleep(5.0)
+
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                self.logger().error(f"Error in order book polling loop: {e}", exc_info=True)
+                await asyncio.sleep(5.0)
 
     async def _connected_websocket_assistant(self) -> WSAssistant:
         """
@@ -211,6 +209,14 @@ class RkexAPIOrderBookDataSource(OrderBookTrackerDataSource):
             metadata={"trading_pair": trading_pair}
         )
         return snapshot_msg
+
+    async def _parse_order_book_snapshot_message(self, raw_message: OrderBookMessage, message_queue: asyncio.Queue):
+        """
+        Parse order book snapshot messages and add them to the output queue.
+        Since we already create OrderBookMessage objects in _order_book_snapshot,
+        we just pass them through.
+        """
+        message_queue.put_nowait(raw_message)
 
     async def _parse_trade_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
         if "result" not in raw_message:

@@ -18,9 +18,11 @@ PING_PATH_URL = "ping"                        # ✅ GET /ping
 SERVER_TIME_PATH_URL = "time"                 # ✅ GET /time
 EXCHANGE_INFO_PATH_URL = "exchangeInfo"       # ✅ GET /exchangeInfo (camelCase!)
 LOGIN_PATH_URL = "login"                      # ✅ POST /login
+ORDER_BOOK_PATH_URL = "orderBook"             # ✅ POST /orderBook - Get order book for a trading pair
+PRICE_PATH_URL = "price"                      # ✅ GET /price - Get prices for all trading pairs
 
 # Private API endpoints (require authentication)
-ACCOUNTS_PATH_URL = "balance"                 # ✅ GET /balance - Get User Assets balance Detail
+ACCOUNTS_PATH_URL = "user/balance"            # ✅ GET /user/balance - Get User Assets balance Detail
 ORDER_PATH_URL = "order"                      # ✅ POST /order - Place an order
 ALL_ORDERS_PATH_URL = "order/all-orders"        # ✅ GET /order/all-orders - Get User Wise orders list
 ACTIVE_ORDERS_PATH_URL = "order/active-orders"  # ✅ GET /order/active-orders - Get User Wise Active order list
@@ -32,9 +34,7 @@ API_KEY_PATH_URL = "apikey"                     # ✅ GET /apikey/{id} - Get a s
 API_KEY_DELETE_PATH_URL = "apikey"              # ✅ DELETE /apikey/{id} - Delete an API key by ID
 
 # ⚠️ NOT AVAILABLE - These Binance-style endpoints do not exist on this API:
-# - GET /depth - Order book depth
 # - GET /ticker/24hr - 24-hour ticker stats
-# - GET /ticker/price - Latest prices
 # - GET /ticker/bookTicker - Best bid/ask
 # - GET /trades - Recent trades
 # - GET /klines - Candlestick data
@@ -43,8 +43,6 @@ API_KEY_DELETE_PATH_URL = "apikey"              # ✅ DELETE /apikey/{id} - Dele
 
 TICKER_PRICE_CHANGE_PATH_URL = "ticker/24hr"  # ❌ NOT AVAILABLE
 TICKER_BOOK_PATH_URL = "ticker/bookTicker"    # ❌ NOT AVAILABLE
-PRICES_PATH_URL = "ticker/price"              # ❌ NOT AVAILABLE
-SNAPSHOT_PATH_URL = "depth"                   # ❌ NOT AVAILABLE
 MY_TRADES_PATH_URL = "myTrades"               # ❌ NOT AVAILABLE
 USER_STREAM_PATH_URL = "userDataStream"       # ❌ NOT AVAILABLE
 
@@ -109,6 +107,18 @@ RATE_LIMITS = [
               linked_limits=[LinkedLimitWeightPair(REQUEST_WEIGHT, 1),
                              LinkedLimitWeightPair(RAW_REQUESTS, 1)]),
     RateLimit(limit_id=EXCHANGE_INFO_PATH_URL, limit=1200, time_interval=ONE_MINUTE,
+              linked_limits=[LinkedLimitWeightPair(REQUEST_WEIGHT, 1),
+                             LinkedLimitWeightPair(RAW_REQUESTS, 1)]),
+    RateLimit(limit_id=LOGIN_PATH_URL, limit=10, time_interval=ONE_MINUTE,
+              linked_limits=[LinkedLimitWeightPair(REQUEST_WEIGHT, 1),
+                             LinkedLimitWeightPair(RAW_REQUESTS, 1)]),
+    RateLimit(limit_id=API_KEY_GENERATE_PATH_URL, limit=10, time_interval=ONE_MINUTE,
+              linked_limits=[LinkedLimitWeightPair(REQUEST_WEIGHT, 1),
+                             LinkedLimitWeightPair(RAW_REQUESTS, 1)]),
+    RateLimit(limit_id=ORDER_BOOK_PATH_URL, limit=1200, time_interval=ONE_MINUTE,
+              linked_limits=[LinkedLimitWeightPair(REQUEST_WEIGHT, 1),
+                             LinkedLimitWeightPair(RAW_REQUESTS, 1)]),
+    RateLimit(limit_id=PRICE_PATH_URL, limit=1200, time_interval=ONE_MINUTE,
               linked_limits=[LinkedLimitWeightPair(REQUEST_WEIGHT, 1),
                              LinkedLimitWeightPair(RAW_REQUESTS, 1)]),
     RateLimit(limit_id=ORDER_PATH_URL, limit=10, time_interval=ONE_SECOND,

@@ -24,11 +24,21 @@ class RkexOrderBook(OrderBook):
         """
         if metadata:
             msg.update(metadata)
+
+        # Log what we're receiving
+        trading_pair = msg.get("trading_pair", "UNKNOWN")
+        bids = msg.get("bids", [])
+        asks = msg.get("asks", [])
+
+        print(f"[RkexOrderBook] Creating snapshot for {trading_pair}")
+        print(f"[RkexOrderBook] Bids: {bids[:2] if len(bids) > 0 else 'empty'}")
+        print(f"[RkexOrderBook] Asks: {asks[:2] if len(asks) > 0 else 'empty'}")
+
         return OrderBookMessage(OrderBookMessageType.SNAPSHOT, {
-            "trading_pair": msg["trading_pair"],
+            "trading_pair": trading_pair,
             "update_id": msg.get("lastUpdateId", timestamp),
-            "bids": msg["bids"],
-            "asks": msg["asks"]
+            "bids": bids,
+            "asks": asks
         }, timestamp=timestamp)
 
     @classmethod

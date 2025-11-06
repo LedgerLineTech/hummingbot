@@ -28,19 +28,19 @@ def is_exchange_information_valid(exchange_info: Dict[str, Any]) -> bool:
 
 class RkexConfigMap(BaseConnectorConfigMap):
     connector: str = "rkex"
-    rkex_api_key: SecretStr = Field(
+    rkex_email: SecretStr = Field(
         default=...,
         json_schema_extra={
-            "prompt": lambda cm: "Enter your Rkex API key",
+            "prompt": lambda cm: "Enter your Rkex email",
             "is_secure": True,
             "is_connect_key": True,
             "prompt_on_new": True,
         }
     )
-    rkex_api_secret: SecretStr = Field(
+    rkex_password: SecretStr = Field(
         default=...,
         json_schema_extra={
-            "prompt": lambda cm: "Enter your Rkex API secret",
+            "prompt": lambda cm: "Enter your Rkex password",
             "is_secure": True,
             "is_connect_key": True,
             "prompt_on_new": True,
